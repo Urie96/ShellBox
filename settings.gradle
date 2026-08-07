@@ -1,0 +1,37 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        mavenLocal()
+    }
+    plugins {
+        id("com.android.application") version "8.10.1"
+        id("com.android.library") version "8.10.1"
+        id("dev.rikka.tools.refine") version "4.4.0"
+    }
+}
+
+plugins {
+    // Global Android settings (compileSdk etc.) for included modules
+    id("com.android.settings") version "8.10.1"
+}
+
+android {
+    compileSdk = 36
+    minSdk = 24
+    targetSdk = 36
+    ndkVersion = "26.1.10909125"
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        mavenLocal()
+    }
+}
+
+rootProject.name = "MyApp"
+
+include ':app'

@@ -1,0 +1,5 @@
+// Top-level build file. All real configuration lives in settings.gradle
+// and module-level build files.
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
+}
