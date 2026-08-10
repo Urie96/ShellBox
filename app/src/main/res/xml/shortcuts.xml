@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="set_proxy"
+        android:enabled="true"
+        android:icon="@drawable/ic_proxy_on"
+        android:shortcutShortLabel="@string/shortcut_set_proxy"
+        android:shortcutLongLabel="@string/shortcut_set_proxy_long">
+        <intent
+            android:action="rikka.shizuku.demo.action.SET_PROXY"
+            android:targetPackage="rikka.shizuku.demo"
+            android:targetClass="rikka.shizuku.demo.ProxyShortcutActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="clear_proxy"
+        android:enabled="true"
+        android:icon="@drawable/ic_proxy_off"
+        android:shortcutShortLabel="@string/shortcut_clear_proxy"
+        android:shortcutLongLabel="@string/shortcut_clear_proxy_long">
+        <intent
+            android:action="rikka.shizuku.demo.action.CLEAR_PROXY"
+            android:targetPackage="rikka.shizuku.demo"
+            android:targetClass="rikka.shizuku.demo.ProxyShortcutActivity" />
+    </shortcut>
+</shortcuts>

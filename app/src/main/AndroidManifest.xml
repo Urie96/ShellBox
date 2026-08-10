@@ -15,7 +15,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- 长按桌面图标出现的快捷方式：开启/关闭代理 -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- 快捷方式入口：无界面，执行代理切换后立即退出 -->
+        <activity android:name=".ProxyShortcutActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay" />
 
         <!-- This provider is required by Shizuku, remove this if your app only supports Sui -->
         <provider

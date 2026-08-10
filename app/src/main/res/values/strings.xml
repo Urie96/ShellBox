@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_set_proxy">开启代理</string>
+    <string name="shortcut_set_proxy_long">开启 HTTP 代理</string>
+    <string name="shortcut_clear_proxy">关闭代理</string>
+    <string name="shortcut_clear_proxy_long">关闭 HTTP 代理</string>
+</resources>

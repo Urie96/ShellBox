@@ -60,6 +60,37 @@
             android:textAllCaps="false"
             android:textColor="?android:colorAccent" />
 
+        <EditText
+            android:id="@+id/edit_proxy"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="http proxy, e.g. 10.79.227.212:8080"
+            android:inputType="textUri"
+            android:text="10.79.227.212:8080" />
+
+        <Button
+            android:id="@+id/button5"
+            style="?android:borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="-12dp"
+            android:layout_marginTop="4dp"
+            android:text="Set global http_proxy"
+            android:textAllCaps="false"
+            android:textColor="?android:colorAccent" />
+
+        <Button
+            android:id="@+id/button6"
+            style="?android:borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="-12dp"
+            android:layout_marginTop="4dp"
+            android:text="Clear global http_proxy"
+            android:textAllCaps="false"
+            android:textColor="?android:colorAccent" />
+
         <Button
             android:id="@+id/button7"
             style="?android:borderlessButtonStyle"

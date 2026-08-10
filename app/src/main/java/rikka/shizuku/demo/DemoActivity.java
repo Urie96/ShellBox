@@ -37,6 +37,7 @@ import rikka.shizuku.demo.util.ApplicationUtils;
 import rikka.shizuku.demo.util.IIntentSenderAdaptor;
 import rikka.shizuku.demo.util.IntentSenderUtils;
 import rikka.shizuku.demo.util.PackageInstallerUtils;
+import rikka.shizuku.demo.util.SettingsGlobalUtils;
 import rikka.shizuku.demo.util.ShizukuSystemServerApi;
 
 @SuppressLint("SetTextI18n")
@@ -46,6 +47,8 @@ public class DemoActivity extends Activity {
     private static final int REQUEST_CODE_BUTTON2 = 2;
     private static final int REQUEST_CODE_BUTTON3 = 3;
     private static final int REQUEST_CODE_BUTTON4 = 4;
+    private static final int REQUEST_CODE_BUTTON5 = 5;
+    private static final int REQUEST_CODE_BUTTON6 = 6;
     private static final int REQUEST_CODE_BUTTON7 = 7;
     private static final int REQUEST_CODE_BUTTON8 = 8;
     private static final int REQUEST_CODE_BUTTON9 = 9;
@@ -86,6 +89,12 @@ public class DemoActivity extends Activity {
         });
         binding.button4.setOnClickListener((v) -> {
             if (checkPermission(REQUEST_CODE_BUTTON4)) getSystemProperty();
+        });
+        binding.button5.setOnClickListener((v) -> {
+            if (checkPermission(REQUEST_CODE_BUTTON5)) setProxy();
+        });
+        binding.button6.setOnClickListener((v) -> {
+            if (checkPermission(REQUEST_CODE_BUTTON6)) clearProxy();
         });
         binding.button7.setOnClickListener((v) -> {
             if (checkPermission(REQUEST_CODE_BUTTON7)) bindUserService();
@@ -128,6 +137,14 @@ public class DemoActivity extends Activity {
                 }
                 case REQUEST_CODE_BUTTON4: {
                     getSystemProperty();
+                    break;
+                }
+                case REQUEST_CODE_BUTTON5: {
+                    setProxy();
+                    break;
+                }
+                case REQUEST_CODE_BUTTON6: {
+                    clearProxy();
                     break;
                 }
                 case REQUEST_CODE_BUTTON7: {
@@ -358,6 +375,41 @@ public class DemoActivity extends Activity {
         } catch (Throwable tr) {
             tr.printStackTrace();
             res.append(tr.toString());
+        }
+        binding.text3.setText(res.toString().trim());
+    }
+
+    private void setProxy() {
+        StringBuilder res = new StringBuilder();
+        try {
+            String proxy = binding.editProxy.getText().toString().trim();
+            if (proxy.isEmpty()) {
+                res.append("proxy is empty, use \"Clear global http_proxy\" to disable");
+            } else if (proxy.indexOf(':') == -1) {
+                res.append("invalid proxy, expected format: host:port");
+            } else {
+                SettingsGlobalUtils.putGlobal("http_proxy", proxy);
+                getSharedPreferences(ProxyShortcutActivity.PREFS, MODE_PRIVATE)
+                        .edit().putString(ProxyShortcutActivity.KEY_PROXY, proxy).apply();
+                res.append("set http_proxy=").append(proxy).append('\n');
+                res.append("now http_proxy=").append(SettingsGlobalUtils.getGlobal("http_proxy"));
+            }
+        } catch (Throwable tr) {
+            tr.printStackTrace();
+            res.append(Log.getStackTraceString(tr));
+        }
+        binding.text3.setText(res.toString().trim());
+    }
+
+    private void clearProxy() {
+        StringBuilder res = new StringBuilder();
+        try {
+            SettingsGlobalUtils.putGlobal("http_proxy", ":0");
+            res.append("cleared http_proxy (set to :0)\n");
+            res.append("now http_proxy=").append(SettingsGlobalUtils.getGlobal("http_proxy"));
+        } catch (Throwable tr) {
+            tr.printStackTrace();
+            res.append(Log.getStackTraceString(tr));
         }
         binding.text3.setText(res.toString().trim());
     }

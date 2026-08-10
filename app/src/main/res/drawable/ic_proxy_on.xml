@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 代理开启：圆环 + 下传箭头 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF2196F3"
+        android:pathData="M12,2A10,10 0,1 1,12 22A10,10 0,1 1,12 2M12,4A8,8 0,1 0,12 20A8,8 0,1 0,12 4" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M13,6L13,14.17L16.59,10.59L18,12L12,18L6,12L7.41,10.59L11,14.17L11,6Z" />
+</vector>
