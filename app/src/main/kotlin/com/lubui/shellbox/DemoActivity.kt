@@ -1,4 +1,4 @@
-package rikka.shizuku.demo
+package com.lubui.shellbox
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -11,9 +11,9 @@ import android.widget.EditText
 import android.widget.ListView
 
 import rikka.shizuku.Shizuku
-import rikka.shizuku.demo.databinding.MainActivityBinding
-import rikka.shizuku.demo.util.ProxyHistory
-import rikka.shizuku.demo.util.SettingsGlobalUtils
+import com.lubui.shellbox.databinding.MainActivityBinding
+import com.lubui.shellbox.util.ProxyHistory
+import com.lubui.shellbox.util.SettingsGlobalUtils
 
 @SuppressLint("SetTextI18n")
 class DemoActivity : Activity() {

@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-**Demo for Shizuku & Sui** — 一个 Android demo 应用，演示如何通过
+**ShellBox** — 一个 Android demo 应用，演示如何通过
 [Shizuku](https://github.com/RikkaApps/Shizuku) / [Sui](https://github.com/RikkaApps/Sui)
 以 [shell(uid 2000)/root(uid 0)](https://github.com/RikkaApps/Shizuku-API)
 身份调用普通应用无权调用的系统能力。Sui 源码见
@@ -54,7 +54,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ```
 app/src/main/
-├── kotlin/rikka/shizuku/demo/
+├── kotlin/com/lubui/shellbox/
 │   ├── DemoActivity.kt            # 主界面（viewBinding: MainActivityBinding），仅开启/关闭代理
 │   ├── DemoApplication.kt         # Sui.init + HiddenApiBypass 全局豁免
 │   ├── ProxyShortcutActivity.kt   # 长按快捷方式入口（Theme.NoDisplay，无界面）
@@ -110,7 +110,7 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
 
 1. **`res/xml` 里不能用 `${applicationId}` 占位符**——AAPT2 不替换资源 XML 中的占位符
    （那是 manifest merger 的功能）。shortcuts.xml 的 `targetPackage` 必须硬编码
-   `rikka.shizuku.demo`。
+   `com.lubui.shellbox`。
 2. **Android 14+ 没有 `IContentProvider$Stub` 类**——IContentProvider 从 AIDL 接口改为
    普通 Java 接口，客户端代理要用 `ContentProviderNative.asInterface()`（反射）。
    `Class.forName("android.content.IContentProvider$Stub")` 在 API 34 会抛

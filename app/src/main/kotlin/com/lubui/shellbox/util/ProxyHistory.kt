@@ -1,4 +1,4 @@
-package rikka.shizuku.demo.util
+package com.lubui.shellbox.util
 
 import android.content.Context
 

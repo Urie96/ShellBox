@@ -5,7 +5,8 @@
     <application
         android:name=".DemoApplication"
         android:allowBackup="false"
-        android:label="Demo for Shizuku &amp; Sui"
+        android:icon="@mipmap/ic_launcher"
+        android:label="ShellBox"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault"
         tools:ignore="GoogleAppIndexingWarning">

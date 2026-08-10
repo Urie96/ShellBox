@@ -5,9 +5,9 @@ plugins {
 }
 
 android {
-    namespace 'rikka.shizuku.demo'
+    namespace 'com.lubui.shellbox'
     defaultConfig {
-        applicationId "rikka.shizuku.demo"
+        applicationId "com.lubui.shellbox"
         versionCode 1
         versionName "1.0"
     }

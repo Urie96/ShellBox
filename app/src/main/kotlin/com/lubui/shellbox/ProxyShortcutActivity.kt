@@ -1,4 +1,4 @@
-package rikka.shizuku.demo
+package com.lubui.shellbox
 
 import android.app.Activity
 import android.content.Intent
@@ -6,8 +6,8 @@ import android.os.Bundle
 import android.widget.Toast
 
 import rikka.shizuku.Shizuku
-import rikka.shizuku.demo.util.ProxyHistory
-import rikka.shizuku.demo.util.SettingsGlobalUtils
+import com.lubui.shellbox.util.ProxyHistory
+import com.lubui.shellbox.util.SettingsGlobalUtils
 
 /**
  * 长按主界面图标出现的 App Shortcuts 的入口：
@@ -17,8 +17,8 @@ import rikka.shizuku.demo.util.SettingsGlobalUtils
 class ProxyShortcutActivity : Activity() {
 
     companion object {
-        const val ACTION_SET_PROXY = "rikka.shizuku.demo.action.SET_PROXY"
-        const val ACTION_CLEAR_PROXY = "rikka.shizuku.demo.action.CLEAR_PROXY"
+        const val ACTION_SET_PROXY = "com.lubui.shellbox.action.SET_PROXY"
+        const val ACTION_CLEAR_PROXY = "com.lubui.shellbox.action.CLEAR_PROXY"
 
         private const val REQUEST_CODE = 100
     }

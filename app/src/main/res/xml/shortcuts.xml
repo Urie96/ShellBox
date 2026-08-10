@@ -7,9 +7,9 @@
         android:shortcutShortLabel="@string/shortcut_set_proxy"
         android:shortcutLongLabel="@string/shortcut_set_proxy_long">
         <intent
-            android:action="rikka.shizuku.demo.action.SET_PROXY"
-            android:targetPackage="rikka.shizuku.demo"
-            android:targetClass="rikka.shizuku.demo.ProxyShortcutActivity" />
+            android:action="com.lubui.shellbox.action.SET_PROXY"
+            android:targetPackage="com.lubui.shellbox"
+            android:targetClass="com.lubui.shellbox.ProxyShortcutActivity" />
     </shortcut>
     <shortcut
         android:shortcutId="clear_proxy"
@@ -18,8 +18,8 @@
         android:shortcutShortLabel="@string/shortcut_clear_proxy"
         android:shortcutLongLabel="@string/shortcut_clear_proxy_long">
         <intent
-            android:action="rikka.shizuku.demo.action.CLEAR_PROXY"
-            android:targetPackage="rikka.shizuku.demo"
-            android:targetClass="rikka.shizuku.demo.ProxyShortcutActivity" />
+            android:action="com.lubui.shellbox.action.CLEAR_PROXY"
+            android:targetPackage="com.lubui.shellbox"
+            android:targetClass="com.lubui.shellbox.ProxyShortcutActivity" />
     </shortcut>
 </shortcuts>

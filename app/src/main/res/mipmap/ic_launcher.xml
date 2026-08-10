@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API 24-25 回退图标：圆角方块 + ">_" -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- 圆角背景 -->
+    <path
+        android:fillColor="@color/ic_launcher_background"
+        android:pathData="M10,0 L38,0 A10,10 0,0 1,48 10 L48,38 A10,10 0,0 1,38 48 L10,48 A10,10 0,0 1,0 38 L0,10 A10,10 0,0 1,10 0 Z" />
+    <!-- ">" -->
+    <path
+        android:strokeColor="@color/ic_launcher_prompt"
+        android:strokeWidth="4.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M17,19.6 L25,24 L17,28.4" />
+    <!-- "_" -->
+    <path
+        android:strokeColor="@color/ic_launcher_prompt"
+        android:strokeWidth="4.4"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M17,32.9 L29.4,32.9" />
+</vector>
