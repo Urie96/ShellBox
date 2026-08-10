@@ -1,9 +1,14 @@
 package com.lubui.shellbox
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.text.InputType
 import android.util.Log
 import android.view.View
 import android.widget.ArrayAdapter
@@ -13,6 +18,7 @@ import android.widget.ListView
 import rikka.shizuku.Shizuku
 import com.lubui.shellbox.databinding.MainActivityBinding
 import com.lubui.shellbox.util.ProxyHistory
+import com.lubui.shellbox.util.ProxyHttpServer
 import com.lubui.shellbox.util.SettingsGlobalUtils
 
 @SuppressLint("SetTextI18n")
@@ -21,6 +27,8 @@ class DemoActivity : Activity() {
     companion object {
         private const val REQUEST_CODE_SET_PROXY = 5
         private const val REQUEST_CODE_CLEAR_PROXY = 6
+        private const val REQUEST_CODE_HTTP_SERVER = 7
+        private const val REQUEST_CODE_NOTIFICATION = 8
     }
 
     private lateinit var binding: MainActivityBinding
@@ -46,10 +54,20 @@ class DemoActivity : Activity() {
         binding.text1.text = "Waiting for binder"
         binding.buttonSetProxy.setOnClickListener { if (checkPermission(REQUEST_CODE_SET_PROXY)) setProxy() }
         binding.buttonClearProxy.setOnClickListener { if (checkPermission(REQUEST_CODE_CLEAR_PROXY)) clearProxy() }
+        binding.buttonHttpToggle.setOnClickListener { toggleHttpServer() }
+        binding.checkAutoStart.isChecked = ProxyHttpServer.isAutoStartEnabled(this)
+        binding.checkAutoStart.setOnCheckedChangeListener { _, checked ->
+            ProxyHttpServer.setAutoStartEnabled(this, checked)
+        }
 
         Shizuku.addBinderReceivedListenerSticky(BINDER_RECEIVED_LISTENER)
         Shizuku.addBinderDeadListener(BINDER_DEAD_LISTENER)
         Shizuku.addRequestPermissionResultListener(REQUEST_PERMISSION_RESULT_LISTENER)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateHttpStatus()
     }
 
     override fun onDestroy() {
@@ -65,9 +83,18 @@ class DemoActivity : Activity() {
             when (requestCode) {
                 REQUEST_CODE_SET_PROXY -> setProxy()
                 REQUEST_CODE_CLEAR_PROXY -> clearProxy()
+                REQUEST_CODE_HTTP_SERVER -> startHttpServerWithNotificationPermission()
             }
         } else {
             binding.text1.text = "User denied permission"
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CODE_NOTIFICATION) {
+            // 通知权限被拒不影响服务本身，照常启动
+            startHttpServer()
         }
     }
 
@@ -148,5 +175,94 @@ class DemoActivity : Activity() {
             res.append(Log.getStackTraceString(tr))
         }
         binding.text3.text = res.toString().trim()
+    }
+
+    // ---- HTTP 服务开关 ----
+
+    private fun toggleHttpServer() {
+        if (ProxyHttpService.running) {
+            stopService(Intent(this, ProxyHttpService::class.java))
+            // onDestroy 是异步的，稍等再刷新按钮状态
+            binding.buttonHttpToggle.postDelayed({ updateHttpStatus() }, 300)
+            return
+        }
+        showPortDialog()
+    }
+
+    /** 启动前弹窗让用户自定义端口（预填当前配置），确认后走授权流程启动服务。 */
+    private fun showPortDialog() {
+        val density = resources.displayMetrics.density
+        val editText = EditText(this).apply {
+            setText(ProxyHttpServer.getPort(this@DemoActivity).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
+            val pad = (16 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("HTTP 服务端口")
+            .setMessage("自定义监听端口（1-65535）")
+            .setView(editText)
+            .setPositiveButton("确定", null) // 点击行为在 setOnShowListener 里接管，便于校验失败时不关闭
+            .setNegativeButton("取消", null)
+            .create()
+        dialog.setOnShowListener {
+            editText.selectAll() // 方便直接覆盖输入
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val port = editText.text.toString().trim().toIntOrNull()
+                if (port == null || port !in 1..65535) {
+                    editText.error = "请输入 1-65535 的端口号"
+                    return@setOnClickListener
+                }
+                ProxyHttpServer.setPort(this, port)
+                dialog.dismiss()
+                if (checkPermission(REQUEST_CODE_HTTP_SERVER)) {
+                    startHttpServerWithNotificationPermission()
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun startHttpServerWithNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_NOTIFICATION)
+        } else {
+            startHttpServer()
+        }
+    }
+
+    private fun startHttpServer() {
+        try {
+            val intent = Intent(this, ProxyHttpService::class.java)
+            if (Build.VERSION.SDK_INT >= 26) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            // onCreate 是异步的，稍等再刷新按钮状态
+            binding.buttonHttpToggle.postDelayed({ updateHttpStatus() }, 500)
+        } catch (tr: Throwable) {
+            binding.text3.text = Log.getStackTraceString(tr)
+        }
+    }
+
+    private fun updateHttpStatus() {
+        val running = ProxyHttpService.running
+        val port = ProxyHttpServer.getPort(this)
+        binding.buttonHttpToggle.text = if (running) "停止 HTTP 服务" else "启动 HTTP 服务"
+        binding.textHttpStatus.text = if (running) {
+            val ip = ProxyHttpServer.getLocalIpAddress() ?: "<获取IP失败>"
+            "运行中: http://$ip:$port\n" +
+                "token: ${ProxyHttpServer.getToken(this)}\n" +
+                "USB 模式: adb reverse tcp:$port tcp:$port"
+        } else {
+            "HTTP 服务未运行\n" +
+                "token: ${ProxyHttpServer.getToken(this)}\n" +
+                "当前端口: $port（点「启动 HTTP 服务」可修改）\n" +
+                "启动后同一 WiFi 访问 http://<手机IP>:$port，或 USB 连接后执行:\n" +
+                "adb reverse tcp:$port tcp:$port"
+        }
     }
 }

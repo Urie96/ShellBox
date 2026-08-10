@@ -2,6 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- HTTP 服务：监听 socket 需要 INTERNET；前台服务常驻需要 FOREGROUND_SERVICE +
+         SPECIAL_USE 类型（不用 dataSync——Android 15+ 对 dataSync 有 6 小时/24 小时时限，会杀常驻服务）；
+         Android 13+ 通知要 POST_NOTIFICATIONS（拒绝也不影响服务本身，只影响通知展示）；
+         开机自启需要 RECEIVE_BOOT_COMPLETED -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <application
         android:name=".DemoApplication"
         android:allowBackup="false"
@@ -28,6 +38,24 @@
             android:exported="true"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.NoDisplay" />
+
+        <!-- HTTP 代理控制服务（前台服务，specialUse 类型：无 Android 15+ 的 dataSync 时限） -->
+        <service android:name=".ProxyHttpService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="local HTTP server for controlling Settings.Global http_proxy" />
+        </service>
+
+        <!-- 开机自动启动 HTTP 服务（是否自启由应用内开关决定，见 DemoActivity 的「开机自启」） -->
+        <receiver android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- This provider is required by Shizuku, remove this if your app only supports Sui -->
         <provider
