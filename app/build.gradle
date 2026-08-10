@@ -10,28 +10,20 @@ android {
         applicationId "rikka.shizuku.demo"
         versionCode 1
         versionName "1.0"
-        externalNativeBuild {
-            cmake {
-                abiFilters "armeabi-v7a", 'arm64-v8a', 'x86', 'x86_64'
-                cppFlags "-std=c++17"
-                arguments '-DANDROID_TOOLCHAIN=clang', '-DANDROID_STL=c++_static'
-            }
-        }
-    }
-    externalNativeBuild {
-        cmake {
-            path "src/main/cpp/CMakeLists.txt"
-        }
     }
     buildFeatures {
         buildConfig = true
         viewBinding = true
-        aidl true
     }
     signingConfigs {
         sign
     }
     buildTypes {
+        debug {
+            // debug 也开 R8 裁剪（只 shrink 不混淆，堆栈可读），否则整个 Kotlin stdlib 会被打进去
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
         release {
             minifyEnabled true
             shrinkResources true
@@ -44,11 +36,6 @@ android {
     }
     kotlinOptions {
         jvmTarget = '21'
-    }
-    packaging {
-        jniLibs {
-            useLegacyPackaging true
-        }
     }
 }
 

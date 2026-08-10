@@ -2,11 +2,11 @@ package rikka.shizuku.demo
 
 import android.app.Activity
 import android.content.Intent
-import android.content.SharedPreferences
 import android.os.Bundle
 import android.widget.Toast
 
 import rikka.shizuku.Shizuku
+import rikka.shizuku.demo.util.ProxyHistory
 import rikka.shizuku.demo.util.SettingsGlobalUtils
 
 /**
@@ -19,10 +19,6 @@ class ProxyShortcutActivity : Activity() {
     companion object {
         const val ACTION_SET_PROXY = "rikka.shizuku.demo.action.SET_PROXY"
         const val ACTION_CLEAR_PROXY = "rikka.shizuku.demo.action.CLEAR_PROXY"
-
-        const val PREFS = "proxy"
-        const val KEY_PROXY = "http_proxy"
-        const val DEFAULT_PROXY = "10.79.227.212:8080"
 
         private const val REQUEST_CODE = 100
     }
@@ -68,8 +64,11 @@ class ProxyShortcutActivity : Activity() {
         try {
             when (action) {
                 ACTION_SET_PROXY -> {
-                    val prefs: SharedPreferences = getSharedPreferences(PREFS, MODE_PRIVATE)
-                    val proxy = prefs.getString(KEY_PROXY, DEFAULT_PROXY) ?: DEFAULT_PROXY
+                    val proxy = ProxyHistory.getLast(this)
+                    if (proxy == null) {
+                        toast("尚未设置过代理地址，请先在应用内设置")
+                        return
+                    }
                     SettingsGlobalUtils.putGlobal("http_proxy", proxy)
                     toast("代理已开启: $proxy")
                 }
