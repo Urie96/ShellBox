@@ -120,6 +120,8 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
      端口以应用内配置为准（默认 16888），UI 状态区会显示实际端口和 reverse 命令。
 - **认证**：所有 /proxy、/clipboard 请求需 `Authorization: Bearer <token>` 或 `?token=`；token 首次运行生成
   （SharedPreferences，16 位随机串），显示在应用 UI 和常驻通知里。没有 token 局域网内任何人都能改代理/读剪贴板。
+  `GET /` 帮助页免认证但**只显示 token 前 4 位**（防止局域网内 `curl http://<手机IP>:<端口>/` 直接拿到完整凭证），
+  完整 token 只出现在应用 UI 和常驻通知里。
 - 路由（写代理复用 SettingsGlobalUtils，写历史复用 ProxyHistory；剪贴板复用 ClipboardApi）：
   `GET /proxy` 查状态；`PUT|POST /proxy`（body `{"proxy":"host:port"}` 或 `?proxy=`）开启；
   `DELETE /proxy` 关闭；`GET /` 帮助页（免认证）。
@@ -183,7 +185,8 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
    不要把它当服务启动的前置条件。
 9. **HTTP 服务实现细节**：手写解析只认简单格式——请求行空格分隔、`Content-Length` 读 body
    （循环读到 `reader.ready()` 判停，避免 UTF-8 字符数<字节数时阻塞）、
-   JSON 只支持单字段对象 `{"field":"value"}`（正则提取，值内支持 `\"`/`\\`/`\n` 等转义）；
+   JSON 解析/序列化一律用平台自带的 `org.json.JSONObject`（不是第三方依赖，不违反零依赖约定；
+   字段提取走 `parseJsonBodyField()`，响应构造走 `jsonObject()`，`JSONObject.NULL` 用于输出显式 null）；
    PUT/POST 的字段也可放 query（`?field=`，已 URL 解码）或表单编码 body（`--data-urlencode`）。
    改路由/格式时要同步更新帮助页文本。
 10. **ClipboardReadBus 防 race（改过一版，勿回退）**：`await()` 阻塞在 future.get() 时**不能先把

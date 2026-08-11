@@ -5,6 +5,9 @@ import android.content.pm.PackageManager
 import android.provider.Settings
 import android.util.Log
 
+import org.json.JSONException
+import org.json.JSONObject
+
 import rikka.shizuku.Shizuku
 
 import java.io.BufferedReader
@@ -38,8 +41,9 @@ import java.util.concurrent.Executors
  * DELETE /proxy                             -> 关闭代理（写 ":0"）
  * GET    /clipboard                         -> 读取剪贴板 {"text":"..."}
  * PUT|POST /clipboard {"text":"..."}        -> 写入剪贴板（或 ?text=...）
- * GET    /                                  -> 帮助页（免认证）
+ * GET    /                                  -> 帮助页（免认证；只显示 token 前 4 位，不泄露完整凭证）
  * ```
+ * 所有错误响应（401/403/404/405/500）统一为 JSON：`{"error":"..."}`。
  * 剪贴板读写见 [ClipboardApi]：写入任何状态都允许；读取在 Android 10+ 需要窗口焦点，
  * 通过透明 [ClipboardGhostActivity] 抢焦点实现（前台服务本身无焦点）。
  */
@@ -269,7 +273,7 @@ class ProxyHttpServer private constructor(
         } catch (e: Throwable) {
             Log.e(TAG, "handle error", e)
             try {
-                Response(500, "text/plain", "internal error: ${e.message}\n").write(socket)
+                errorResponse(500, "internal error: ${e.message}").write(socket)
             } catch (ignored: Throwable) {
             }
         }
@@ -280,10 +284,10 @@ class ProxyHttpServer private constructor(
             return Response(200, "text/plain", helpText())
         }
         if (path != "/proxy" && path != "/clipboard") {
-            return Response(404, "text/plain", "not found: $path\n")
+            return errorResponse(404, "not found: $path")
         }
         if (!authed) {
-            return Response(401, "text/plain", "unauthorized: missing or wrong token\n")
+            return errorResponse(401, "unauthorized: missing or wrong token")
         }
         return if (path == "/proxy") routeProxy(method, query, body) else routeClipboard(method, query, body)
     }
@@ -296,7 +300,7 @@ class ProxyHttpServer private constructor(
             false
         }
         if (!granted) {
-            return Response(403, "text/plain", "Shizuku/Sui permission not granted\n")
+            return errorResponse(403, "Shizuku/Sui permission not granted")
         }
 
         return try {
@@ -304,27 +308,36 @@ class ProxyHttpServer private constructor(
                 "GET" -> {
                     val proxy = SettingsGlobalUtils.getGlobal("http_proxy")
                     val enabled = !proxy.isNullOrEmpty() && proxy != ":0"
-                    Response(200, "application/json", "{\"enabled\":$enabled,\"proxy\":${jsonString(proxy)}}\n")
+                    Response(200, "application/json", jsonObject(
+                        "enabled" to enabled,
+                        "proxy" to (proxy ?: JSONObject.NULL) // NULL 哨兵：保持输出显式 null 而非缺字段
+                    ) + "\n")
                 }
                 "PUT", "POST" -> {
-                    val value = query["proxy"] ?: parseJsonField(body, "proxy") ?: parseQuery(body)["proxy"]
+                    val value = query["proxy"] ?: parseJsonBodyField(body, "proxy") ?: parseQuery(body)["proxy"]
                     if (value.isNullOrEmpty() || value.indexOf(':') == -1) {
-                        Response(400, "text/plain", "invalid proxy, expected \"host:port\", got: $value\n")
+                        errorResponse(400, "invalid proxy, expected \"host:port\", got: $value")
                     } else {
                         SettingsGlobalUtils.putGlobal("http_proxy", value)
                         ProxyHistory.add(context, value)
-                        Response(200, "application/json", "{\"ok\":true,\"proxy\":${jsonString(value)}}\n")
+                        Response(200, "application/json", jsonObject(
+                            "ok" to true,
+                            "proxy" to value
+                        ) + "\n")
                     }
                 }
                 "DELETE" -> {
                     SettingsGlobalUtils.putGlobal("http_proxy", ":0")
-                    Response(200, "application/json", "{\"ok\":true,\"enabled\":false}\n")
+                    Response(200, "application/json", jsonObject(
+                        "ok" to true,
+                        "enabled" to false
+                    ) + "\n")
                 }
-                else -> Response(405, "text/plain", "method not allowed: $method\n")
+                else -> errorResponse(405, "method not allowed: $method")
             }
         } catch (tr: Throwable) {
             Log.e(TAG, "route error", tr)
-            Response(500, "text/plain", "error: ${tr.message}\n")
+            errorResponse(500, "error: ${tr.message}")
         }
     }
 
@@ -341,31 +354,38 @@ class ProxyHttpServer private constructor(
                         } else {
                             "background launch blocked; grant \"Display over other apps\" (悬浮窗) permission in settings"
                         }
-                        Response(500, "text/plain", "clipboard read failed: $hint\n")
+                        errorResponse(500, "clipboard read failed: $hint")
                     } else {
-                        Response(200, "application/json", "{\"text\":${jsonString(text)}}\n")
+                        Response(200, "application/json", jsonObject(
+                            "text" to text
+                        ) + "\n")
                     }
                 }
                 "PUT", "POST" -> {
-                    val value = query["text"] ?: parseJsonField(body, "text") ?: parseQuery(body)["text"]
+                    val value = query["text"] ?: parseJsonBodyField(body, "text") ?: parseQuery(body)["text"]
                     if (value == null) {
-                        Response(400, "text/plain", "missing text: expected {\"text\":\"...\"} or ?text=...\n")
+                        errorResponse(400, "missing text: expected {\"text\":\"...\"} or ?text=...")
                     } else {
                         ClipboardApi.setText(context, value)
-                        Response(200, "application/json", "{\"ok\":true,\"text\":${jsonString(value)}}\n")
+                        Response(200, "application/json", jsonObject(
+                            "ok" to true,
+                            "text" to value
+                        ) + "\n")
                     }
                 }
-                else -> Response(405, "text/plain", "method not allowed: $method\n")
+                else -> errorResponse(405, "method not allowed: $method")
             }
         } catch (tr: Throwable) {
             Log.e(TAG, "clipboard route error", tr)
-            Response(500, "text/plain", "error: ${tr.message}\n")
+            errorResponse(500, "error: ${tr.message}")
         }
     }
 
     private fun helpText(): String = buildString {
         append("ShellBox control\n")
-        append("Token: ").append(token).append("\n\n")
+        // 帮助页免认证，绝不能泄露完整 token（否则局域网内任何人 curl / 即可拿到凭证改代理/读剪贴板）；
+        // 只显示前 4 位供确认服务器身份，完整 token 见手机端应用界面/常驻通知。
+        append("Token: ").append(token.take(4)).append("**** (full token: see app UI / notification on the phone)\n\n")
         append("All /proxy and /clipboard requests need auth:\n")
         append("  header: Authorization: Bearer <token>\n")
         append("  or query: ?token=<token>\n\n")
@@ -377,6 +397,7 @@ class ProxyHttpServer private constructor(
         append("  GET    /clipboard                      -> {\"text\":\"...\"} read clipboard\n")
         append("  PUT|POST /clipboard {\"text\":\"...\"}  -> set clipboard\n")
         append("           or ?text=...                  -> set clipboard (query form)\n")
+        append("\nAll errors (401/403/404/405/500) are JSON: {\"error\":\"...\"}\n")
         append("\nClipboard notes:\n")
         append("  - GET needs screen on & unlocked (Android 10+ requires window focus);\n")
         append("  - background GET additionally needs the \"Display over other apps\" (悬浮窗)\n")
@@ -406,47 +427,27 @@ class ProxyHttpServer private constructor(
     }
 
     /**
-     * 从 `{"field":"value"}` 提取字段值（手写极简 JSON 解析，不引依赖）。
-     * 值内支持 `\"`、`\\`、`\n`、`\r`、`\t` 转义；`\uXXXX` 不解码（本服务不会输出）。
+     * 从 JSON body 提取字段值（改用平台自带的 org.json 解析，替代手写正则；非法 JSON/缺字段返回 null）。
+     * 值支持完整 JSON 转义（含 `\uXXXX`），数组/嵌套对象等由调用方决定是否接受（本服务取字符串字段）。
      */
-    private fun parseJsonField(body: String, field: String): String? {
-        val regex = Regex("\"$field\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
-        val raw = regex.find(body)?.groupValues?.get(1) ?: return null
-        val sb = StringBuilder(raw.length)
-        var i = 0
-        while (i < raw.length) {
-            val c = raw[i]
-            if (c == '\\' && i + 1 < raw.length) {
-                when (raw[i + 1]) {
-                    '"' -> sb.append('"')
-                    '\\' -> sb.append('\\')
-                    'n' -> sb.append('\n')
-                    'r' -> sb.append('\r')
-                    't' -> sb.append('\t')
-                    else -> { sb.append(c); sb.append(raw[i + 1]) }
-                }
-                i += 2
-            } else {
-                sb.append(c)
-                i += 1
-            }
+    private fun parseJsonBodyField(body: String, field: String): String? {
+        if (body.isBlank()) return null
+        return try {
+            val obj = JSONObject(body)
+            if (!obj.has(field) || obj.isNull(field)) null else obj.optString(field)
+        } catch (e: JSONException) {
+            null
         }
-        return sb.toString()
     }
 
-    private fun jsonString(s: String?): String {
-        if (s == null) return "null"
-        val sb = StringBuilder("\"")
-        for (c in s) {
-            when (c) {
-                '"' -> sb.append("\\\"")
-                '\\' -> sb.append("\\\\")
-                '\n' -> sb.append("\\n")
-                '\r' -> sb.append("\\r")
-                '\t' -> sb.append("\\t")
-                else -> if (c < ' ') sb.append("\\u%04x".format(c.code)) else sb.append(c)
-            }
-        }
-        return sb.append('"').toString()
+    /** 构造 JSON 错误响应：`{"error":"..."}`（4xx/5xx 统一用 JSON，方便脚本解析）。 */
+    private fun errorResponse(code: Int, message: String): Response =
+        Response(code, "application/json", jsonObject("error" to message) + "\n")
+
+    /** 用平台 org.json 构造 JSON 对象（null 值输出为 `null` 而非缺字段；传 JSONObject.NULL 可强制显式 null）。 */
+    private fun jsonObject(vararg pairs: Pair<String, Any?>): String {
+        val obj = JSONObject()
+        for ((k, v) in pairs) obj.put(k, v ?: JSONObject.NULL)
+        return obj.toString()
     }
 }

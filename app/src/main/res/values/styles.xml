@@ -9,5 +9,10 @@
         <item name="android:windowDisablePreview">true</item>
         <item name="android:windowContentOverlay">@null</item>
         <item name="android:colorBackgroundCacheHint">@null</item>
+        <!-- 关键：窗口内容透明 ≠ 系统栏透明。状态栏/导航栏是顶层窗口 decor 按 statusBarColor 单独绘制的，
+             不显式置透明会按 Theme.DeviceDefault 默认的黑色绘制，在其他应用前台时表现为状态栏闪黑 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
     </style>
 </resources>
