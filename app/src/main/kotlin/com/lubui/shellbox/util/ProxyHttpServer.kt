@@ -2,6 +2,7 @@ package com.lubui.shellbox.util
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.provider.Settings
 import android.util.Log
 
 import rikka.shizuku.Shizuku
@@ -35,8 +36,12 @@ import java.util.concurrent.Executors
  * PUT|POST /proxy  {"proxy":"host:port"}    -> 开启代理
  *           或 ?proxy=host:port
  * DELETE /proxy                             -> 关闭代理（写 ":0"）
+ * GET    /clipboard                         -> 读取剪贴板 {"text":"..."}
+ * PUT|POST /clipboard {"text":"..."}        -> 写入剪贴板（或 ?text=...）
  * GET    /                                  -> 帮助页（免认证）
  * ```
+ * 剪贴板读写见 [ClipboardApi]：写入任何状态都允许；读取在 Android 10+ 需要窗口焦点，
+ * 通过透明 [ClipboardGhostActivity] 抢焦点实现（前台服务本身无焦点）。
  */
 class ProxyHttpServer private constructor(
     private val context: Context,
@@ -230,11 +235,24 @@ class ProxyHttpServer private constructor(
                 }
                 val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
 
-                // 请求体
+                // curl 对 >1KB 的 body 会先发 Expect: 100-continue 等服务端确认，
+                // 不回 100 会一直等不到 body（表现为请求卡住直到超时）
+                if (headers["expect"]?.contains("100-continue", ignoreCase = true) == true) {
+                    socket.getOutputStream().write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.UTF_8))
+                    socket.getOutputStream().flush()
+                }
+
+                // 请求体：循环读完当前可读数据（read 单次可能只返回一部分；
+                // ready() 判停避免 UTF-8 下字符数<字节数时阻塞等不存在的剩余字节）
                 val body = if (contentLength > 0) {
                     val buf = CharArray(contentLength)
-                    val read = reader.read(buf, 0, contentLength)
-                    String(buf, 0, read.coerceAtLeast(0))
+                    var off = 0
+                    while (off < contentLength && reader.ready()) {
+                        val n = reader.read(buf, off, contentLength - off)
+                        if (n <= 0) break // EOF
+                        off += n
+                    }
+                    String(buf, 0, off)
                 } else ""
 
                 // 路径 + query
@@ -261,12 +279,17 @@ class ProxyHttpServer private constructor(
         if (path == "/") {
             return Response(200, "text/plain", helpText())
         }
-        if (path != "/proxy") {
+        if (path != "/proxy" && path != "/clipboard") {
             return Response(404, "text/plain", "not found: $path\n")
         }
         if (!authed) {
             return Response(401, "text/plain", "unauthorized: missing or wrong token\n")
         }
+        return if (path == "/proxy") routeProxy(method, query, body) else routeClipboard(method, query, body)
+    }
+
+    /** /proxy：读写全局代理（需 Shizuku/Sui 授权）。 */
+    private fun routeProxy(method: String, query: Map<String, String>, body: String): Response {
         val granted = try {
             Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
         } catch (e: Throwable) {
@@ -284,7 +307,7 @@ class ProxyHttpServer private constructor(
                     Response(200, "application/json", "{\"enabled\":$enabled,\"proxy\":${jsonString(proxy)}}\n")
                 }
                 "PUT", "POST" -> {
-                    val value = query["proxy"] ?: parseJsonProxy(body)
+                    val value = query["proxy"] ?: parseJsonField(body, "proxy") ?: parseQuery(body)["proxy"]
                     if (value.isNullOrEmpty() || value.indexOf(':') == -1) {
                         Response(400, "text/plain", "invalid proxy, expected \"host:port\", got: $value\n")
                     } else {
@@ -305,10 +328,45 @@ class ProxyHttpServer private constructor(
         }
     }
 
+    /** /clipboard：读写剪贴板（普通 API，不需要 Shizuku；读取限制见 [ClipboardApi] 注释）。 */
+    private fun routeClipboard(method: String, query: Map<String, String>, body: String): Response {
+        return try {
+            when (method) {
+                "GET" -> {
+                    val text = ClipboardApi.getText(context)
+                    if (text == null) {
+                        // 区分失败原因，给出可操作提示
+                        val hint = if (Settings.canDrawOverlays(context)) {
+                            "no window focus (screen locked?)"
+                        } else {
+                            "background launch blocked; grant \"Display over other apps\" (悬浮窗) permission in settings"
+                        }
+                        Response(500, "text/plain", "clipboard read failed: $hint\n")
+                    } else {
+                        Response(200, "application/json", "{\"text\":${jsonString(text)}}\n")
+                    }
+                }
+                "PUT", "POST" -> {
+                    val value = query["text"] ?: parseJsonField(body, "text") ?: parseQuery(body)["text"]
+                    if (value == null) {
+                        Response(400, "text/plain", "missing text: expected {\"text\":\"...\"} or ?text=...\n")
+                    } else {
+                        ClipboardApi.setText(context, value)
+                        Response(200, "application/json", "{\"ok\":true,\"text\":${jsonString(value)}}\n")
+                    }
+                }
+                else -> Response(405, "text/plain", "method not allowed: $method\n")
+            }
+        } catch (tr: Throwable) {
+            Log.e(TAG, "clipboard route error", tr)
+            Response(500, "text/plain", "error: ${tr.message}\n")
+        }
+    }
+
     private fun helpText(): String = buildString {
-        append("ShellBox proxy control\n")
+        append("ShellBox control\n")
         append("Token: ").append(token).append("\n\n")
-        append("All /proxy requests need auth:\n")
+        append("All /proxy and /clipboard requests need auth:\n")
         append("  header: Authorization: Bearer <token>\n")
         append("  or query: ?token=<token>\n\n")
         append("Endpoints:\n")
@@ -316,6 +374,14 @@ class ProxyHttpServer private constructor(
         append("  PUT    /proxy {\"proxy\":\"host:port\"}  -> enable proxy\n")
         append("  POST   /proxy ?proxy=host:port         -> enable proxy (query form)\n")
         append("  DELETE /proxy                          -> disable proxy\n")
+        append("  GET    /clipboard                      -> {\"text\":\"...\"} read clipboard\n")
+        append("  PUT|POST /clipboard {\"text\":\"...\"}  -> set clipboard\n")
+        append("           or ?text=...                  -> set clipboard (query form)\n")
+        append("\nClipboard notes:\n")
+        append("  - GET needs screen on & unlocked (Android 10+ requires window focus);\n")
+        append("  - background GET additionally needs the \"Display over other apps\" (悬浮窗)\n")
+        append("    permission — enable it in the app to allow background activity launches.\n")
+        append("  - Android 12+ shows a system toast on every clipboard read.\n")
     }
 
     private fun parseQuery(query: String): Map<String, String> {
@@ -324,16 +390,48 @@ class ProxyHttpServer private constructor(
         for (pair in query.split('&')) {
             val idx = pair.indexOf('=')
             if (idx > 0) {
-                map[pair.substring(0, idx)] = pair.substring(idx + 1)
+                map[pair.substring(0, idx)] = decodeQueryValue(pair.substring(idx + 1))
             }
         }
         return map
     }
 
-    /** 从 `{"proxy":"host:port"}` 提取 proxy 字段（手写极简 JSON 解析，不引依赖）。 */
-    private fun parseJsonProxy(body: String): String? {
-        val regex = Regex("\"proxy\"\\s*:\\s*\"([^\"]*)\"")
-        return regex.find(body)?.groupValues?.get(1)
+    /** URL 解码 query 值（%XX 与 +）；非法转义时原样返回。 */
+    private fun decodeQueryValue(value: String): String {
+        return try {
+            java.net.URLDecoder.decode(value, Charsets.UTF_8.name())
+        } catch (e: Exception) {
+            value
+        }
+    }
+
+    /**
+     * 从 `{"field":"value"}` 提取字段值（手写极简 JSON 解析，不引依赖）。
+     * 值内支持 `\"`、`\\`、`\n`、`\r`、`\t` 转义；`\uXXXX` 不解码（本服务不会输出）。
+     */
+    private fun parseJsonField(body: String, field: String): String? {
+        val regex = Regex("\"$field\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+        val raw = regex.find(body)?.groupValues?.get(1) ?: return null
+        val sb = StringBuilder(raw.length)
+        var i = 0
+        while (i < raw.length) {
+            val c = raw[i]
+            if (c == '\\' && i + 1 < raw.length) {
+                when (raw[i + 1]) {
+                    '"' -> sb.append('"')
+                    '\\' -> sb.append('\\')
+                    'n' -> sb.append('\n')
+                    'r' -> sb.append('\r')
+                    't' -> sb.append('\t')
+                    else -> { sb.append(c); sb.append(raw[i + 1]) }
+                }
+                i += 2
+            } else {
+                sb.append(c)
+                i += 1
+            }
+        }
+        return sb.toString()
     }
 
     private fun jsonString(s: String?): String {

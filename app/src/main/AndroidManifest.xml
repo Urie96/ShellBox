@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 后台读取剪贴板需要：Android 10+ 后台启动 ghost activity 受 BAL 限制，
+         授予「显示在其他应用上层」是官方列出的豁免条件之一（需用户在系统设置里手动开启） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:name=".DemoApplication"
@@ -38,6 +41,15 @@
             android:exported="true"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.NoDisplay" />
+
+        <!-- 剪贴板读取用透明幽灵 Activity：Android 10+ 读剪贴板必须有窗口焦点，
+             前台服务没有；此 Activity 抢到焦点读完立即关闭（无动画、不进最近任务） -->
+        <activity android:name=".ClipboardGhostActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.ShellBox.Transparent" />
 
         <!-- HTTP 代理控制服务（前台服务，specialUse 类型：无 Android 15+ 的 dataSync 时限） -->
         <service android:name=".ProxyHttpService"

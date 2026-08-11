@@ -12,6 +12,8 @@
 - **关闭代理**：写入 `":0"`（惯例写法）
 - **长按桌面图标快捷方式**：一键开启/关闭代理；开启时默认使用最近一次使用的地址
 - 代理历史保存在本地 SharedPreferences，兼容旧版本（旧 key 自动迁移）
+- **HTTP 远程控制**：电脑通过 HTTP 读写剪贴板（`GET/PUT /clipboard`）与开关代理（`/proxy`），
+  详见 [AGENTS.md](AGENTS.md)「HTTP 远程控制」章节
 
 ## 环境要求
 
@@ -61,13 +63,17 @@ app/src/main/
 │   ├── DemoActivity.kt            # 主界面：开启/关闭代理 + 权限处理
 │   ├── DemoApplication.kt         # Sui.init + HiddenApiBypass 全局豁免
 │   ├── ProxyShortcutActivity.kt   # 长按快捷方式入口（Theme.NoDisplay，无界面）
+│   ├── ClipboardGhostActivity.kt  # 剪贴板读取用透明幽灵 Activity（抢焦点读后立即关闭）
 │   └── util/
 │       ├── SettingsGlobalUtils.kt # ★ 核心：以 shell/root 读写 Settings.Global
-│       └── ProxyHistory.kt        # 最近使用的代理地址历史
+│       ├── ProxyHistory.kt        # 最近使用的代理地址历史
+│       ├── ProxyHttpServer.kt     # ★ 极简 HTTP 服务器（纯 JDK ServerSocket，零依赖）
+│       └── ClipboardApi.kt        # 剪贴板读写：写入直接写；读取 Android 10+ 走 ghost activity
 └── res/
     ├── xml/shortcuts.xml          # 静态快捷方式（长按菜单：开启/关闭代理）
     ├── layout/main_activity.xml   # 主界面
     ├── layout/dialog_proxy.xml    # 开启代理对话框（历史列表 + 输入框）
+    ├── values/styles.xml          # Theme.ShellBox.Transparent（幽灵 Activity 用）
     ├── mipmap*/ic_launcher.xml    # 应用图标（>_ 终端提示符风格）
     └── drawable/                  # 快捷方式图标、图标前景
 ```

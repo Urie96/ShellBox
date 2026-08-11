@@ -6,8 +6,10 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputType
 import android.util.Log
 import android.view.View
@@ -17,6 +19,7 @@ import android.widget.ListView
 
 import rikka.shizuku.Shizuku
 import com.lubui.shellbox.databinding.MainActivityBinding
+import com.lubui.shellbox.util.AppFocusState
 import com.lubui.shellbox.util.ProxyHistory
 import com.lubui.shellbox.util.ProxyHttpServer
 import com.lubui.shellbox.util.SettingsGlobalUtils
@@ -59,6 +62,8 @@ class DemoActivity : Activity() {
         binding.checkAutoStart.setOnCheckedChangeListener { _, checked ->
             ProxyHttpServer.setAutoStartEnabled(this, checked)
         }
+        binding.buttonOverlayPermission.setOnClickListener { requestOverlayPermission() }
+        updateOverlayStatus()
 
         Shizuku.addBinderReceivedListenerSticky(BINDER_RECEIVED_LISTENER)
         Shizuku.addBinderDeadListener(BINDER_DEAD_LISTENER)
@@ -68,6 +73,13 @@ class DemoActivity : Activity() {
     override fun onResume() {
         super.onResume()
         updateHttpStatus()
+        updateOverlayStatus() // 从系统悬浮窗设置页返回后刷新
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // 供 ClipboardApi 判断「前台 + 剪贴板为空」时无需启动 ghost activity
+        AppFocusState.hasWindowFocus = hasFocus
     }
 
     override fun onDestroy() {
@@ -175,6 +187,34 @@ class DemoActivity : Activity() {
             res.append(Log.getStackTraceString(tr))
         }
         binding.text3.text = res.toString().trim()
+    }
+
+    // ---- 后台剪贴板读取：需「显示在其他应用上层」权限（BAL 豁免） ----
+
+    /** 悬浮窗权限状态按钮文案：后台读剪贴板的前置条件（Android 10+ 后台启动 Activity 被系统限制）。 */
+    private fun updateOverlayStatus() {
+        val granted = Settings.canDrawOverlays(this)
+        binding.buttonOverlayPermission.text = if (granted) {
+            "后台读取剪贴板：已授权悬浮窗"
+        } else {
+            "后台读取剪贴板：未授权（点此开启）"
+        }
+    }
+
+    private fun requestOverlayPermission() {
+        if (Settings.canDrawOverlays(this)) {
+            binding.text3.text = "已授予「显示在其他应用上层」权限，后台可直接读剪贴板"
+            updateOverlayStatus()
+            return
+        }
+        // 引导到系统设置页；返回应用后 onResume 刷新按钮状态
+        runCatching {
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+            )
+        }.onFailure { tr ->
+            binding.text3.text = Log.getStackTraceString(tr)
+        }
     }
 
     // ---- HTTP 服务开关 ----

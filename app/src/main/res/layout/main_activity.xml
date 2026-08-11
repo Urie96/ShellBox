@@ -56,6 +56,17 @@
             android:layout_marginTop="4dp"
             android:text="开机自动启动 HTTP 服务" />
 
+        <Button
+            android:id="@+id/button_overlay_permission"
+            style="?android:borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="-12dp"
+            android:layout_marginTop="4dp"
+            android:text="后台读取剪贴板：未授权（点此开启）"
+            android:textAllCaps="false"
+            android:textColor="?android:colorAccent" />
+
         <TextView
             android:id="@+id/text_http_status"
             android:layout_width="wrap_content"

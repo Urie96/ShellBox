@@ -60,12 +60,14 @@ app/src/main/
 │   ├── DemoActivity.kt            # 主界面（viewBinding: MainActivityBinding），代理开关 + HTTP 服务开关 + 开机自启
 │   ├── DemoApplication.kt         # Sui.init + HiddenApiBypass 全局豁免
 │   ├── ProxyShortcutActivity.kt   # 长按快捷方式入口（Theme.NoDisplay，无界面）
+│   ├── ClipboardGhostActivity.kt  # 剪贴板读取用透明幽灵 Activity（抢焦点读后立即关闭）
 │   ├── ProxyHttpService.kt        # HTTP 服务前台服务（foregroundServiceType=specialUse）
 │   ├── BootReceiver.kt            # 开机/应用更新后自动启动 HTTP 服务（受「开机自启」开关控制）
 │   └── util/
 │       ├── SettingsGlobalUtils.kt # ★ 核心：以 shell/root 读写 Settings.Global
 │       ├── ProxyHistory.kt        # 最近使用的代理地址历史（SharedPreferences，最多 10 条）
-│       └── ProxyHttpServer.kt     # ★ 极简 HTTP 服务器（纯 JDK ServerSocket，零依赖）
+│       ├── ProxyHttpServer.kt     # ★ 极简 HTTP 服务器（纯 JDK ServerSocket，零依赖）
+│       └── ClipboardApi.kt        # 剪贴板读写：写入直接写；读取 Android 10+ 走 ghost activity
 └── res/
     ├── xml/shortcuts.xml          # 静态快捷方式（长按菜单：开启/关闭代理）
     ├── layout/main_activity.xml   # 主界面：开启/关闭代理 + HTTP 服务开关 + 状态文本
@@ -116,11 +118,20 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
   1. 同一 WiFi：`http://<手机IP>:<端口>`（IP 用 `ProxyHttpServer.getLocalIpAddress()` 枚举网卡）；
   2. USB：`adb reverse tcp:<端口> tcp:<端口>` 后访问 `http://127.0.0.1:<端口>`。
      端口以应用内配置为准（默认 16888），UI 状态区会显示实际端口和 reverse 命令。
-- **认证**：所有 /proxy 请求需 `Authorization: Bearer <token>` 或 `?token=`；token 首次运行生成
-  （SharedPreferences，16 位随机串），显示在应用 UI 和常驻通知里。没有 token 局域网内任何人都能改代理。
-- 路由（写代理复用 SettingsGlobalUtils，写历史复用 ProxyHistory）：
+- **认证**：所有 /proxy、/clipboard 请求需 `Authorization: Bearer <token>` 或 `?token=`；token 首次运行生成
+  （SharedPreferences，16 位随机串），显示在应用 UI 和常驻通知里。没有 token 局域网内任何人都能改代理/读剪贴板。
+- 路由（写代理复用 SettingsGlobalUtils，写历史复用 ProxyHistory；剪贴板复用 ClipboardApi）：
   `GET /proxy` 查状态；`PUT|POST /proxy`（body `{"proxy":"host:port"}` 或 `?proxy=`）开启；
   `DELETE /proxy` 关闭；`GET /` 帮助页（免认证）。
+- **剪贴板端点**（ClipboardApi）：`GET /clipboard` 读剪贴板、`PUT|POST /clipboard`（body `{"text":"..."}`、
+  `?text=` 或表单编码 body 均可）写剪贴板，均需认证。写入任何状态都允许。读取分两级：
+  ① 前台快路径：DemoActivity 有窗口焦点时（AppFocusState 跟踪）同一 UID 的 Service 也能读，
+  空剪贴板直接返回空串，不启动 Activity；② 否则启动透明 `ClipboardGhostActivity` 抢焦点
+  （无动画、不进最近任务、2.5s 安全超时，**焦点用轮询 hasWindowFocus() 检测，不依赖
+  onWindowFocusChanged 回调**），结果经 `ClipboardReadBus` 交回 HTTP 线程。
+  **后台读取的前提**：Android 10+ 后台启动 Activity 受 BAL 限制，须授予「显示在其他应用上层」
+  （SYSTEM_ALERT_WINDOW）权限（DemoActivity 里有入口按钮），否则 ghost 根本启动不了。
+  其他限制：需要屏幕亮且解锁；Android 12+ 每次读都会弹系统 toast（无法隐藏）。
 - UI 开关在 DemoActivity：先走 Shizuku 授权（复用 checkPermission），Android 13+ 再请求
   POST_NOTIFICATIONS（被拒不影响服务，只影响通知展示）。
 - 已知局限：普通 App 进程会被 OEM 省电策略杀掉（前台服务也非绝对常驻），被杀后 START_STICKY 会重建；
@@ -170,9 +181,21 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
    **不要用 dataSync**：Android 15+ 对 dataSync 有 6 小时/24 小时时限，常驻会被杀。
 8. **POST_NOTIFICATIONS（Android 13+）**：不授予时服务照常运行、通知不显示；
    不要把它当服务启动的前置条件。
-9. **HTTP 服务实现细节**：手写解析只认简单格式——请求行空格分隔、`Content-Length` 读 body、
-   JSON 只支持 `{"proxy":"host:port"}`（正则提取）；改路由/格式时要同步更新帮助页文本。
-10. **开机自启**：`BootReceiver` 不要直接硬启动——先查 `isAutoStartEnabled()`；
+9. **HTTP 服务实现细节**：手写解析只认简单格式——请求行空格分隔、`Content-Length` 读 body
+   （循环读到 `reader.ready()` 判停，避免 UTF-8 字符数<字节数时阻塞）、
+   JSON 只支持单字段对象 `{"field":"value"}`（正则提取，值内支持 `\"`/`\\`/`\n` 等转义）；
+   PUT/POST 的字段也可放 query（`?field=`，已 URL 解码）或表单编码 body（`--data-urlencode`）。
+   改路由/格式时要同步更新帮助页文本。
+10. **ClipboardReadBus 防 race（改过一版，勿回退）**：`await()` 阻塞在 future.get() 时**不能先把
+    future 从 map 移除**——ghost 是异步的，几毫秒后才 complete，future 被提前移除会导致结果被丢弃、
+    每次读取都干等 3.5s 超时（曾因此 bug 导致前台空剪贴板/后台读取全部失败）。正确做法：await 持有
+    map 中的引用阻塞，complete 移除并 complete 同一个 future，await 结束后清理。
+11. **剪贴板读取（ClipboardApi/ClipboardGhostActivity）**：前台场景优先直接读（AppFocusState 判断），
+    空剪贴板不启动 ghost；ghost 的 theme 在 `res/values/styles.xml`（Theme.ShellBox.Transparent），
+    manifest 里 taskAffinity="" + noHistory + excludeFromRecents；
+    **后台场景必须「显示在其他应用上层」权限**（BAL 豁免），否则系统静默拦截 ghost 启动
+    （logcat 搜 "Background activity launch blocked"）；Android 12+ 读剪贴板必弹系统 toast，属平台行为。
+12. **开机自启**：`BootReceiver` 不要直接硬启动——先查 `isAutoStartEnabled()`；
     BOOT_COMPLETED 豁免仅适用于系统正常开机广播，厂商 ROM 可能有「自启动管理」白名单，
     被禁时收不到广播（MIUI/HyperOS 需在设置里允许后台自启）。
 
