@@ -4,6 +4,15 @@ plugins {
     id('org.jetbrains.kotlin.android')
 }
 
+// 签名配置从 key.properties 读取（不提交、不入库），缺省时 release 构建不签名
+// 生成密钥: keytool -genkeypair -v -keystore ~/.android/personal.keystore -alias personal \
+//           -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=..., O=..., C=CN"
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file('key.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
 android {
     namespace 'com.lubui.shellbox'
     defaultConfig {
@@ -16,7 +25,14 @@ android {
         viewBinding = true
     }
     signingConfigs {
-        sign
+        sign {
+            if (keystoreProps.containsKey('storeFile')) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
     }
     buildTypes {
         debug {
@@ -28,6 +44,7 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.sign
         }
     }
     compileOptions {
