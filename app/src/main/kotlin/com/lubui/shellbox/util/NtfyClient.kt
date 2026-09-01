@@ -2,18 +2,16 @@ package com.lubui.shellbox.util
 
 import android.util.Log
 
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-
 import org.json.JSONObject
 
+import java.io.BufferedReader
 import java.io.IOException
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 /**
  * ntfy 客户端：长轮询订阅 + 发布。协议见 https://docs.ntfy.sh
@@ -28,9 +26,12 @@ import java.util.concurrent.TimeUnit
  * - 认证：访问令牌（tk_xxx）经 `Authorization: Bearer <token>`，发布/订阅通用。
  * - 断线由 [startSubscribe] 内部指数退避自动重连（1s→…→60s），并用 `since=<lastId>` 补收
  *   离线期间错过的消息（ntfy 服务器默认缓存 12h）。「重连后只收新消息」用 `since=<当前unix秒>`。
- * - [reconnectNow] 供网络恢复回调调用：取消在途请求并唤醒退避睡眠，立即重试。
+ * - [reconnectNow] 供网络恢复回调调用：断开在途连接并唤醒退避睡眠，立即重试。
  *
  * 本类不依赖任何第三方推送服务；服务器/topic/token 由 [PushConfig] 提供。
+ * HTTP 客户端用 JDK 标准库 [HttpURLConnection]（零第三方依赖）：Android 的 HttpURLConnection
+ * 天然只有 HTTP/1.1——长轮询经 nginx 反代时正好避免 HTTP/2 流式转发被缓冲的问题；
+ * 长连接的读超时（readTimeout）、取消（另线程 disconnect() 中断阻塞读）均可用。
  */
 object NtfyClient {
 
@@ -46,6 +47,8 @@ object NtfyClient {
         val click: String?
     )
 
+    private const val CONNECT_TIMEOUT_MS = 15_000
+
     private const val INITIAL_BACKOFF_MS = 1_000L
     private const val MAX_BACKOFF_MS = 60_000L
 
@@ -58,24 +61,19 @@ object NtfyClient {
     /** 单次读超时：必须大于 ntfy keepalive 间隔（~45s），否则会误判死连接。 */
     private const val READ_TIMEOUT_SECONDS = 90L
 
-    /**
-     * HTTP 客户端。**强制 HTTP/1.1**：长轮询订阅是无限流式响应，经 nginx 反代时 HTTP/2 的
-     * 流式转发可能被缓冲导致消息收不到（实测 curl HTTP/1.1 正常、OkHttp 默认 HTTP/2 收不到）；
-     * 长轮询用 1.1 本来就够了。
-     */
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        .protocols(listOf(Protocol.HTTP_1_1))
-        .build()
-
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { r ->
         Thread(r, "ntfy-subscribe").apply { isDaemon = true }
     }
 
     @Volatile
     private var running = false
-    private var currentCall: okhttp3.Call? = null
+
+    /**
+     * 在途订阅连接。持有到连接彻底结束（finally）才置 null，
+     * 保证 [stopSubscribe]/[reconnectNow] 从其它线程 disconnect() 能中断阻塞中的 readLine()。
+     */
+    @Volatile
+    private var currentConn: HttpURLConnection? = null
     private var sleepThread: Thread? = null
 
     /** 会话 id：每次 startSubscribe 自增；旧会话退出时不能误清新会话的 running 标志。 */
@@ -86,6 +84,19 @@ object NtfyClient {
     private var lastForcedReconnect = 0L
 
     val isRunning: Boolean get() = running
+
+    /** 打开连接并设置公共参数（超时/跟随重定向/禁用缓存/头）。 */
+    private fun openConnection(url: String, method: String, token: String): HttpURLConnection {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.requestMethod = method
+        conn.connectTimeout = CONNECT_TIMEOUT_MS
+        conn.readTimeout = (READ_TIMEOUT_SECONDS * 1000).toInt()
+        conn.instanceFollowRedirects = true
+        conn.useCaches = false
+        conn.setRequestProperty("User-Agent", "ShellBox")
+        if (token.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $token")
+        return conn
+    }
 
     /**
      * 启动订阅循环（异步，跑在独立线程；重复调用直接返回）。
@@ -116,46 +127,43 @@ object NtfyClient {
             var backoff = INITIAL_BACKOFF_MS
             var rateLimited = false
             while (running) {
+                var conn: HttpURLConnection? = null
                 try {
                     val url = subscribeUrl(server, topic, since)
-                    val request = Request.Builder()
-                        .url(url)
-                        .apply {
-                            if (token.isNotBlank()) header("Authorization", "Bearer $token")
-                            header("User-Agent", "ShellBox")
+                    conn = openConnection(url, "GET", token)
+                    currentConn = conn
+                    // responseCode 阻塞到响应头到达；连接被另线程 disconnect()（重连/停止）时抛 IOException
+                    val code = conn.responseCode
+                    if (code !in 200..299) {
+                        val friendly = when (code) {
+                            401, 403 -> "认证失败（HTTP $code）：请检查 token"
+                            429 -> "被限流（HTTP 429）：请求过多，正在自动退避重试"
+                            else -> "服务器返回 HTTP $code"
                         }
-                        .build()
-                    val call = http.newCall(request)
-                    currentCall = call
-                    call.execute().use { response ->
-                        currentCall = null
-                        if (!response.isSuccessful) {
-                            val friendly = when (response.code) {
-                                401, 403 -> "认证失败（HTTP ${response.code}）：请检查 token"
-                                429 -> "被限流（HTTP 429）：请求过多，正在自动退避重试"
-                                else -> "服务器返回 HTTP ${response.code}"
-                            }
-                            rateLimited = response.code == 429
-                            throw IOException(friendly)
-                        }
-                        // 连接成功：重置退避 + 通知上层
-                        backoff = INITIAL_BACKOFF_MS
-                        onConnected()
-                        // 注意：必须直接用 response.body.source()（BufferedSource，会做网络 I/O）；
-                        // 不要调 .buffer()——那会拿到内部 Buffer，读它不做 I/O，延迟下读到的永远是空 → 立即 EOF
-                        val source = response.body?.source()
-                        while (running && source != null) {
-                            val line = source.readUtf8Line() ?: break
-                            val msg = parseLine(line) ?: continue
-                            onMessage(msg)
-                            if (msg.id.isNotEmpty()) since = msg.id
-                        }
+                        rateLimited = code == 429
+                        throw IOException(friendly)
+                    }
+                    // 连接成功：重置退避 + 通知上层
+                    backoff = INITIAL_BACKOFF_MS
+                    onConnected()
+                    // 逐行读长轮询流：readLine() 阻塞在网络 I/O（读超时 90s 兜底），
+                    // 另线程 disconnect() 会使其抛 IOException → 走 catch 退出或重连
+                    val reader = BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8))
+                    while (running) {
+                        val line = reader.readLine() ?: break
+                        val msg = parseLine(line) ?: continue
+                        onMessage(msg)
+                        if (msg.id.isNotEmpty()) since = msg.id
                     }
                 } catch (tr: Throwable) {
                     if (!running) break
                     val err = tr.message ?: tr.javaClass.simpleName
                     Log.w(TAG, "subscribe error: $err")
                     onError(err)
+                } finally {
+                    // currentConn 保持到连接彻底结束，disconnect() 才能命中阻塞中的读
+                    currentConn = null
+                    conn?.disconnect()
                 }
                 if (!running) break
                 if (rateLimited) {
@@ -170,28 +178,28 @@ object NtfyClient {
             synchronized(this) {
                 if (mySession == session) {
                     running = false
-                    currentCall = null
+                    currentConn = null
                 }
             }
         }
     }
 
-    /** 停止订阅：取消在途请求并唤醒退避睡眠，循环在下一轮检查退出。 */
+    /** 停止订阅：断开在途连接并唤醒退避睡眠，循环在下一轮检查退出。 */
     fun stopSubscribe() {
         running = false
-        currentCall?.cancel()
+        currentConn?.disconnect()
         sleepThread?.interrupt()
     }
 
     /**
-     * 网络恢复等场景下立即重试（取消在途请求 + 唤醒退避睡眠）。
+     * 网络恢复等场景下立即重试（断开在途连接 + 唤醒退避睡眠）。
      * 带节流：5 秒内只生效一次，防止 onAvailable 连发/网络抖动把服务器打出限流风暴。
      */
     fun reconnectNow() {
         val now = System.currentTimeMillis()
         if (now - lastForcedReconnect < RECONNECT_THROTTLE_MS) return
         lastForcedReconnect = now
-        currentCall?.cancel()
+        currentConn?.disconnect()
         sleepThread?.interrupt()
     }
 
@@ -207,16 +215,17 @@ object NtfyClient {
             .put("message", message)
             .put("priority", priority)
         if (title.isNotBlank()) json.put("title", title)
-        val body = json.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-        val request = Request.Builder()
-            .url("${server.trimEnd('/')}/$topic")
-            .post(body)
-            .apply { if (token.isNotBlank()) header("Authorization", "Bearer $token") }
-            .build()
-        http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("发布失败（HTTP ${response.code}）")
+        val conn = openConnection("${server.trimEnd('/')}/$topic", "POST", token)
+        conn.doOutput = true
+        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        try {
+            conn.outputStream.use { it.write(json.toString().toByteArray(StandardCharsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                throw IOException("发布失败（HTTP $code）")
             }
+        } finally {
+            conn.disconnect()
         }
     }
 

@@ -31,7 +31,6 @@ https://github.com/RikkaApps/Sui（子模块式结构，含 Shizuku-API）。
 | Shizuku API | `dev.rikka.shizuku:api` / `provider` 13.1.5（Maven） |
 | Hidden stub | `dev.rikka.hidden:stub` 4.4.0（compileOnly） |
 | Hidden 豁免 | `org.lsposed.hiddenapibypass:hiddenapibypass` 6.1 |
-| OkHttp | `com.squareup.okhttp3:okhttp` 4.12.0（服务端推送的 HTTP 客户端，项目唯一第三方网络库） |
 | SDK / 目标 | compileSdk 36, minSdk 24, targetSdk 36 |
 | JVM | source/target 21，`kotlinOptions.jvmTarget = '21'` |
 | 开发机 | Android 14 (API 34) |
@@ -39,13 +38,12 @@ https://github.com/RikkaApps/Sui（子模块式结构，含 Shizuku-API）。
 ## 构建与部署
 
 ```bash
-# 构建（gradle 已在 PATH，无需 wrapper / devenv shell）
+# 正式部署（release 签名，覆盖安装；设备常驻 release 版，勿混装 debug）
+gradle :app:assembleRelease
+adb install -r app/build/outputs/apk/release/app-release.apk
+
+# 本地调试（debug 签名，仅限调试机）
 gradle :app:assembleDebug
-
-# 产物
-app/build/outputs/apk/debug/app-debug.apk
-
-# 部署（设备需开启 USB 调试）
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -53,7 +51,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - **必须用系统 `gradle` 命令**（8.14.4），仓库没有 `gradlew`，不要创建 wrapper。
 - `local.properties` 由 nix-shell/devenv 自动生成（`sdk.dir`/`ndk.dir` 指向 nix store），
   不要提交、不要手动改。
-- debug 构建也启用了 R8 裁剪（只 shrink 不混淆，堆栈可读），APK 约 420KB（含 OkHttp，推送功能引入前约 70KB）；
+- **永远不要 `adb uninstall`**（硬性规则）：`adb install -r` 报签名不匹配
+  （`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）时，**严禁卸载重装**——那会清掉设备上应用的全部数据
+  （代理历史、HTTP token、推送配置、快捷方式等），且用户可能根本没授权。正确做法：停下来
+  询问用户，通常构建 release 版覆盖安装即可（设备常驻 release 签名，见 `key.properties`）。
+- 项目**零第三方网络库**：HTTP 全部走 JDK 标准库（`HttpURLConnection` / `ServerSocket`）。
+  debug 构建启用 R8 裁剪（只 shrink 不混淆，堆栈可读）：debug APK 约 192KB、release APK 约 92KB；
   若发现 APK 异常变大（几 MB 的零填充垃圾），是增量打包残留，`gradle clean` 后重建即可。
 
 ## 项目结构
@@ -73,7 +76,7 @@ app/src/main/
 │       ├── ProxyHistory.kt        # 最近使用的代理地址历史（SharedPreferences，最多 10 条）
 │       ├── ProxyHttpServer.kt     # ★ 极简 HTTP 服务器（纯 JDK ServerSocket，零依赖）
 │       ├── PushConfig.kt          # 推送配置（ntfy 服务器/topic/token/last_id，SharedPreferences）
-│       ├── NtfyClient.kt          # ★ ntfy 客户端：长轮询订阅循环（OkHttp）+ 发布
+│       ├── NtfyClient.kt          # ★ ntfy 客户端：长轮询订阅循环（HttpURLConnection，零依赖）+ 发布
 │       ├── PushApi.kt             # 把 ntfy 消息渲染成系统通知（优先级→通道映射、tags→emoji）
 │       └── ClipboardApi.kt        # 剪贴板读写：写入直接写；读取 Android 10+ 走 ghost activity
 └── res/
@@ -163,11 +166,13 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
   curl -H "Authorization: Bearer tk_xxx" -H "Title: CI" -H "Priority: high" -H "Tags: rocket" \
        -d "build #123 passed" https://push.域名/shellbox_随机topic
   ```
-- **订阅协议**（NtfyClient，OkHttp 长轮询）：`GET {server}/{topic}/json?since=<id|时间戳>`，服务器逐行吐 JSON
-  （`event: open/message/keepalive`，keepalive 每 ~45s 保活）；单次读超时 90s 用于感知死连接。
+- **订阅协议**（NtfyClient，标准库 `HttpURLConnection` 长轮询）：`GET {server}/{topic}/json?since=<id|时间戳>`，
+  服务器逐行吐 JSON（`event: open/message/keepalive`，keepalive 每 ~45s 保活）；单次读超时 90s 用于感知死连接。
   认证走 `Authorization: Bearer <token>`（发布/订阅通用）。
-  **读流必须用 `response.body.source()`（BufferedSource），不要调 `.buffer()`**——后者拿到内部 Buffer，
-  读它不做网络 I/O，延迟下缓冲区是空的 → 立即 EOF（曾因此 bug 导致「连上但永远收不到消息」）。
+  实现要点：读流直接用 `conn.inputStream` 包 `BufferedReader` 逐行读（网络 I/O 阻塞读，天然正确，
+  不要绕缓存层）；`readTimeout=90s` 兑底；**取消在途订阅 = 另线程 `conn.disconnect()`**（阻塞中的
+  readLine() 抛 IOException 退出）。Android 的 HttpURLConnection 天然只有 HTTP/1.1，正好规避 HTTP/2
+  流式转发被反代缓冲的问题。
 - **补消息**：`since` 用**消息 id**（收到消息后同步 commit 持久化 `PushConfig.last_id`），断线重连自动补收
   错过的消息（ntfy 默认缓存 12h）；**首次运行用当前 unix 秒级时间戳**，避免把服务器缓存的旧消息全弹出来。
 - **重连**：指数退避 1s→60s；`ConnectivityManager.registerDefaultNetworkCallback`（需 ACCESS_NETWORK_STATE）
@@ -247,9 +252,10 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
     「补消息」用消息 id，见 `NtfyPushService.startSubscribe()`。
 14. **`registerDefaultNetworkCallback` 需要 `ACCESS_NETWORK_STATE`**（普通权限，manifest 已声明）；
     不加会抛 SecurityException。
-15. **推送服务是项目引入 OkHttp 的唯二理由**（另一个是发布测试推送）：长轮询的读超时、TLS、连接管理
-    比裸 HttpURLConnection 稳。构建产物会从 ~70KB 涨到 ~420KB，属正常（R8 已裁剪）。
-    不要用它重写 ProxyHttpServer（那个坚持零依赖）。
+15. **推送服务已改为标准库 `HttpURLConnection`（项目零第三方网络库）**（曾用 OkHttp，2025-09 移除）：
+    `NtfyClient` 的订阅长轮询/发布全走 `HttpURLConnection`，要点见「服务端推送」章节的订阅协议。
+    不要为推送重新引入 OkHttp——若发现长轮询问题，优先排查 readTimeout/disconnect() 用法，
+    不要回退到第三方依赖。
 16. **改推送配置后必须重启服务才生效**（订阅循环持有旧 server/topic）；改 server/topic 时还要
     `clearLastId`，否则旧 topic 的消息 id 会被当成新 topic 的 `since`（id 是时间排序的，行为不可预期）。
 17. **ntfy 反代三个必改配置**（本项目实测踩坑，见 `~/nix/machines/home-server/services/ntfy.nix`）：
@@ -259,6 +265,10 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
     - nginx 侧**不要用 `proxyWebsockets`**（NixOS 模块）——它注入 `Connection: $connection_upgrade`，
       对无 Upgrade 的普通请求解析为 `Connection: close`，长轮询流被截断；改用 extraConfig 手写
       `proxy_http_version 1.1; proxy_set_header Connection ""; proxy_buffering off;`。
+18. **永远不要 `adb uninstall`**（硬性规则）：`adb install -r` 报签名不匹配
+    （`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）时严禁卸载重装——那会清掉设备上应用的全部数据
+    （代理历史、HTTP token、推送配置等），且可能根本没被授权。停下来问用户，通常用 release
+    签名覆盖安装即可，见「构建与部署」。
 
 ## 相关资源
 

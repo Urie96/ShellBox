@@ -71,6 +71,5 @@ dependencies {
     // bypass hidden api restriction, https://github.com/LSPosed/AndroidHiddenApiBypass
     implementation 'org.lsposed.hiddenapibypass:hiddenapibypass:6.1'
 
-    // 服务端推送（ntfy 订阅）：HTTP 客户端（长轮询 + 发布），项目唯一第三方网络库
-    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    // 注意：HTTP 客户端全部用 JDK 标准库（HttpURLConnection）——订阅长轮询、发布、ProxyHttpServer 均零第三方依赖
 }
