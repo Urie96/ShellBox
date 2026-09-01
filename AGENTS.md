@@ -10,12 +10,15 @@
 身份调用普通应用无权调用的系统能力。Sui 源码见
 https://github.com/RikkaApps/Sui（子模块式结构，含 Shizuku-API）。
 
-当前功能**只有代理开关 + HTTP 远程控制**（其余 demo 功能已删除）：
+当前功能**只有代理开关 + HTTP 远程控制 + 服务端推送**（其余 demo 功能已删除）：
 - 以 shell/root 身份读写 `Settings.Global` 的 `http_proxy`，等价于 `settings put/get global http_proxy ...`
 - 应用内「开启代理」弹对话框：列出最近使用过的代理地址（按最近使用排序，最多 10 条）+ 手动输入框；「关闭代理」写入 `":0"`
 - 长按桌面图标快捷方式：一键开启/关闭代理（开启时默认使用最近一次使用的地址）
 - **HTTP 服务**（前台服务，`ProxyHttpService`）：让电脑通过 HTTP 请求切换代理，
   见下方「HTTP 远程控制」章节
+- **服务端推送**（前台服务，`NtfyPushService`）：手机长轮询订阅自建 ntfy 服务器，
+  NAS/任意设备 `curl -d "消息" https://<ntfy服务器>/<topic>` 即可弹系统通知（Bark 替代），
+  见下方「服务端推送」章节
 
 ## 技术栈与版本
 
@@ -28,6 +31,7 @@ https://github.com/RikkaApps/Sui（子模块式结构，含 Shizuku-API）。
 | Shizuku API | `dev.rikka.shizuku:api` / `provider` 13.1.5（Maven） |
 | Hidden stub | `dev.rikka.hidden:stub` 4.4.0（compileOnly） |
 | Hidden 豁免 | `org.lsposed.hiddenapibypass:hiddenapibypass` 6.1 |
+| OkHttp | `com.squareup.okhttp3:okhttp` 4.12.0（服务端推送的 HTTP 客户端，项目唯一第三方网络库） |
 | SDK / 目标 | compileSdk 36, minSdk 24, targetSdk 36 |
 | JVM | source/target 21，`kotlinOptions.jvmTarget = '21'` |
 | 开发机 | Android 14 (API 34) |
@@ -49,7 +53,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - **必须用系统 `gradle` 命令**（8.14.4），仓库没有 `gradlew`，不要创建 wrapper。
 - `local.properties` 由 nix-shell/devenv 自动生成（`sdk.dir`/`ndk.dir` 指向 nix store），
   不要提交、不要手动改。
-- debug 构建也启用了 R8 裁剪（只 shrink 不混淆，堆栈可读），APK 约 70KB；
+- debug 构建也启用了 R8 裁剪（只 shrink 不混淆，堆栈可读），APK 约 420KB（含 OkHttp，推送功能引入前约 70KB）；
   若发现 APK 异常变大（几 MB 的零填充垃圾），是增量打包残留，`gradle clean` 后重建即可。
 
 ## 项目结构
@@ -62,11 +66,15 @@ app/src/main/
 │   ├── ProxyShortcutActivity.kt   # 长按快捷方式入口（Theme.NoDisplay，无界面）
 │   ├── ClipboardGhostActivity.kt  # 剪贴板读取用透明幽灵 Activity（抢焦点读后立即关闭）
 │   ├── ProxyHttpService.kt        # HTTP 服务前台服务（foregroundServiceType=specialUse）
-│   ├── BootReceiver.kt            # 开机/应用更新后自动启动 HTTP 服务（受「开机自启」开关控制）
+│   ├── NtfyPushService.kt         # 推送服务前台服务（ntfy 订阅，同样 specialUse）
+│   ├── BootReceiver.kt            # 开机/应用更新后自动启动 HTTP 服务与推送服务（受各自开关控制）
 │   └── util/
 │       ├── SettingsGlobalUtils.kt # ★ 核心：以 shell/root 读写 Settings.Global
 │       ├── ProxyHistory.kt        # 最近使用的代理地址历史（SharedPreferences，最多 10 条）
 │       ├── ProxyHttpServer.kt     # ★ 极简 HTTP 服务器（纯 JDK ServerSocket，零依赖）
+│       ├── PushConfig.kt          # 推送配置（ntfy 服务器/topic/token/last_id，SharedPreferences）
+│       ├── NtfyClient.kt          # ★ ntfy 客户端：长轮询订阅循环（OkHttp）+ 发布
+│       ├── PushApi.kt             # 把 ntfy 消息渲染成系统通知（优先级→通道映射、tags→emoji）
 │       └── ClipboardApi.kt        # 剪贴板读写：写入直接写；读取 Android 10+ 走 ghost activity
 └── res/
     ├── xml/shortcuts.xml          # 静态快捷方式（长按菜单：开启/关闭代理）
@@ -139,6 +147,39 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
 - 已知局限：普通 App 进程会被 OEM 省电策略杀掉（前台服务也非绝对常驻），被杀后 START_STICKY 会重建；
   手机 IP 随网络变化、WiFi 休眠会断连——这是普通应用的天花板，Sui 那种杀不死的 root 守护进程不适用于此。
 
+## 服务端推送：NtfyPushService / NtfyClient / PushApi（Bark 替代）
+
+让 NAS/任意设备 `curl` 一条消息就弹手机系统通知，**不依赖 FCM/厂商通道**。
+
+- **架构**：手机**主动向外**长轮询连接自建 ntfy 服务器（Docker 部署在公网可达的 NAS 上），
+  NAS 发消息时 `curl` 服务器即可——手机在外面/流量网络也能收到，不需要手机有入站能力。
+  这是与「HTTP 远程控制」（NAS 直连手机，仅限同一局域网）的本质区别。
+- **部署（NAS 侧，一次性）**：`docker run -d -p 8080:80 -v /srv/ntfy:/var/lib/ntfy binwiederhier/ntfy serve`，
+  反代 + Let's Encrypt 得到 `https://push.域名`；用 `ntfy token add` 创建 `tk_` 开头访问令牌
+  （topic 本身就是随机串当密码，token 再加一层）。
+- **用法（NAS 侧）**：
+  ```bash
+  curl -d "部署完成" https://push.域名/shellbox_随机topic
+  curl -H "Authorization: Bearer tk_xxx" -H "Title: CI" -H "Priority: high" -H "Tags: rocket" \
+       -d "build #123 passed" https://push.域名/shellbox_随机topic
+  ```
+- **订阅协议**（NtfyClient，OkHttp 长轮询）：`GET {server}/{topic}/json?since=<id|时间戳>`，服务器逐行吐 JSON
+  （`event: open/message/keepalive`，keepalive 每 ~45s 保活）；单次读超时 90s 用于感知死连接。
+  认证走 `Authorization: Bearer <token>`（发布/订阅通用）。
+  **读流必须用 `response.body.source()`（BufferedSource），不要调 `.buffer()`**——后者拿到内部 Buffer，
+  读它不做网络 I/O，延迟下缓冲区是空的 → 立即 EOF（曾因此 bug 导致「连上但永远收不到消息」）。
+- **补消息**：`since` 用**消息 id**（收到消息后同步 commit 持久化 `PushConfig.last_id`），断线重连自动补收
+  错过的消息（ntfy 默认缓存 12h）；**首次运行用当前 unix 秒级时间戳**，避免把服务器缓存的旧消息全弹出来。
+- **重连**：指数退避 1s→60s；`ConnectivityManager.registerDefaultNetworkCallback`（需 ACCESS_NETWORK_STATE）
+  监听网络切换（WiFi↔流量），`NtfyClient.reconnectNow()` 取消在途请求+唤醒退避立即重试。
+- **通知渲染**（PushApi）：ntfy priority 1-5 映射到 3 个 Android 通道——1-2→`push_low`（静默）、
+  3→`push_default`、4-5→`push_high`（横幅+声音），用户可在系统设置单独调；tags 常见 emoji 短码
+  前缀到标题；`click` 字段仅放行 http/https 跳浏览器，否则打开应用；每次推送都是新通知（ID 递增）。
+- **配置**：应用内「推送设置」填服务器/topic/token（`push` prefs）；「发送测试推送」走完整链路
+  （发布→服务器→订阅循环→通知）；改 server/topic 会 `clearLastId` 并重启服务生效。
+- **开机自启**：BootReceiver 按 `push/auto_start` 开关（默认关）启动，与 HTTP 服务独立。
+- 认证/权限：不需要 Shizuku；POST_NOTIFICATIONS 走同一套请求流程（拒绝不影响服务本身）。
+
 ## 权限/交互流程
 
 - 所有 Shizuku 操作先走 `checkPermission(code)`（DemoActivity）：未授权则
@@ -201,6 +242,23 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
 12. **开机自启**：`BootReceiver` 不要直接硬启动——先查 `isAutoStartEnabled()`；
     BOOT_COMPLETED 豁免仅适用于系统正常开机广播，厂商 ROM 可能有「自启动管理」白名单，
     被禁时收不到广播（MIUI/HyperOS 需在设置里允许后台自启）。
+13. **ntfy 订阅参数**：`since` 合法值是 duration / unix 时间戳 / 消息 id / `all`，**没有 `since=none`**；
+    默认是 `all`（会把服务器缓存的全吐出来）。「只收新消息」用当前 unix 秒，
+    「补消息」用消息 id，见 `NtfyPushService.startSubscribe()`。
+14. **`registerDefaultNetworkCallback` 需要 `ACCESS_NETWORK_STATE`**（普通权限，manifest 已声明）；
+    不加会抛 SecurityException。
+15. **推送服务是项目引入 OkHttp 的唯二理由**（另一个是发布测试推送）：长轮询的读超时、TLS、连接管理
+    比裸 HttpURLConnection 稳。构建产物会从 ~70KB 涨到 ~420KB，属正常（R8 已裁剪）。
+    不要用它重写 ProxyHttpServer（那个坚持零依赖）。
+16. **改推送配置后必须重启服务才生效**（订阅循环持有旧 server/topic）；改 server/topic 时还要
+    `clearLastId`，否则旧 topic 的消息 id 会被当成新 topic 的 `since`（id 是时间排序的，行为不可预期）。
+17. **ntfy 反代三个必改配置**（本项目实测踩坑，见 `~/nix/machines/home-server/services/ntfy.nix`）：
+    - ntfy 侧必须 `behind-proxy: true`——否则所有访客被当成反代一个 IP，共享默认 60 请求/5s 补 1 的
+      配额桶（服务端 stats 显示 `visitors=1`），手机订阅被 429 打死；同时调大
+      `visitor-request-limit-burst: 5000`、`visitor-request-limit-replenish: 1s`。
+    - nginx 侧**不要用 `proxyWebsockets`**（NixOS 模块）——它注入 `Connection: $connection_upgrade`，
+      对无 Upgrade 的普通请求解析为 `Connection: close`，长轮询流被截断；改用 extraConfig 手写
+      `proxy_http_version 1.1; proxy_set_header Connection ""; proxy_buffering off;`。
 
 ## 相关资源
 
@@ -209,3 +267,4 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
   https://github.com/RikkaApps/Shizuku-API/issues/12
 - 上游 Sui 项目：https://github.com/RikkaApps/Sui
 - 本 demo 使用的依赖均来自 Maven Central：`dev.rikka.shizuku:api:13.1.5` 等
+- ntfy 协议文档：https://docs.ntfy.sh（订阅 API / 发布 API；本项目只用 HTTP 长轮询 + JSON 发布）

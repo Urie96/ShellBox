@@ -11,6 +11,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 推送服务用 ConnectivityManager 监听网络切换（WiFi↔流量）触发立即重连；普通权限，安装即授 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 后台读取剪贴板需要：Android 10+ 后台启动 ghost activity 受 BAL 限制，
          授予「显示在其他应用上层」是官方列出的豁免条件之一（需用户在系统设置里手动开启） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -58,6 +60,15 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="local HTTP server for controlling Settings.Global http_proxy" />
+        </service>
+
+        <!-- 服务端推送（ntfy 订阅）：前台服务，specialUse 类型（无 dataSync 时限） -->
+        <service android:name=".NtfyPushService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="ntfy push notification subscriber (long-poll to self-hosted ntfy server)" />
         </service>
 
         <!-- 开机自动启动 HTTP 服务（是否自启由应用内开关决定，见 DemoActivity 的「开机自启」） -->

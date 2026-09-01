@@ -75,6 +75,55 @@
             android:fontFamily="monospace"
             android:textIsSelectable="true" />
 
+        <!-- 服务端推送（ntfy）：手机长轮询订阅，NAS 上 curl 服务器即可发通知 -->
+        <Button
+            android:id="@+id/button_push_toggle"
+            style="?android:borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="-12dp"
+            android:layout_marginTop="16dp"
+            android:text="启动推送服务"
+            android:textAllCaps="false"
+            android:textColor="?android:colorAccent" />
+
+        <Button
+            android:id="@+id/button_push_config"
+            style="?android:borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="-12dp"
+            android:layout_marginTop="4dp"
+            android:text="推送设置（服务器 / topic / token）"
+            android:textAllCaps="false"
+            android:textColor="?android:colorAccent" />
+
+        <Button
+            android:id="@+id/button_push_test"
+            style="?android:borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="-12dp"
+            android:layout_marginTop="4dp"
+            android:text="发送测试推送"
+            android:textAllCaps="false"
+            android:textColor="?android:colorAccent" />
+
+        <CheckBox
+            android:id="@+id/check_push_auto_start"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="开机自动启动推送服务" />
+
+        <TextView
+            android:id="@+id/text_push_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:fontFamily="monospace"
+            android:textIsSelectable="true" />
+
         <TextView
             android:id="@android:id/text1"
             android:layout_width="wrap_content"

@@ -15,13 +15,16 @@ import android.util.Log
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ListView
 
 import rikka.shizuku.Shizuku
 import com.lubui.shellbox.databinding.MainActivityBinding
 import com.lubui.shellbox.util.AppFocusState
+import com.lubui.shellbox.util.NtfyClient
 import com.lubui.shellbox.util.ProxyHistory
 import com.lubui.shellbox.util.ProxyHttpServer
+import com.lubui.shellbox.util.PushConfig
 import com.lubui.shellbox.util.SettingsGlobalUtils
 
 @SuppressLint("SetTextI18n")
@@ -35,6 +38,9 @@ class DemoActivity : Activity() {
     }
 
     private lateinit var binding: MainActivityBinding
+
+    /** 等待通知权限授权的服务 Intent（授权回调后真正启动）。 */
+    private var pendingServiceIntent: Intent? = null
 
     private val BINDER_RECEIVED_LISTENER = Shizuku.OnBinderReceivedListener {
         if (Shizuku.isPreV11()) {
@@ -65,6 +71,15 @@ class DemoActivity : Activity() {
         binding.buttonOverlayPermission.setOnClickListener { requestOverlayPermission() }
         updateOverlayStatus()
 
+        binding.buttonPushToggle.setOnClickListener { togglePush() }
+        binding.buttonPushConfig.setOnClickListener { showPushConfigDialog() }
+        binding.buttonPushTest.setOnClickListener { testPush() }
+        binding.checkPushAutoStart.isChecked = PushConfig.isAutoStartEnabled(this)
+        binding.checkPushAutoStart.setOnCheckedChangeListener { _, checked ->
+            PushConfig.setAutoStartEnabled(this, checked)
+        }
+        updatePushStatus()
+
         Shizuku.addBinderReceivedListenerSticky(BINDER_RECEIVED_LISTENER)
         Shizuku.addBinderDeadListener(BINDER_DEAD_LISTENER)
         Shizuku.addRequestPermissionResultListener(REQUEST_PERMISSION_RESULT_LISTENER)
@@ -73,6 +88,7 @@ class DemoActivity : Activity() {
     override fun onResume() {
         super.onResume()
         updateHttpStatus()
+        updatePushStatus() // 从设置页/系统设置返回后刷新
         updateOverlayStatus() // 从系统悬浮窗设置页返回后刷新
     }
 
@@ -95,7 +111,7 @@ class DemoActivity : Activity() {
             when (requestCode) {
                 REQUEST_CODE_SET_PROXY -> setProxy()
                 REQUEST_CODE_CLEAR_PROXY -> clearProxy()
-                REQUEST_CODE_HTTP_SERVER -> startHttpServerWithNotificationPermission()
+                REQUEST_CODE_HTTP_SERVER -> startServiceWithNotificationPermission(Intent(this, ProxyHttpService::class.java))
             }
         } else {
             binding.text1.text = "User denied permission"
@@ -105,8 +121,11 @@ class DemoActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_NOTIFICATION) {
-            // 通知权限被拒不影响服务本身，照常启动
-            startHttpServer()
+            // 通知权限被拒不影响服务本身，照常启动（HTTP 服务或推送服务，见 pendingServiceIntent）
+            pendingServiceIntent?.let { intent ->
+                pendingServiceIntent = null
+                startServiceInternal(intent)
+            }
         }
     }
 
@@ -256,26 +275,26 @@ class DemoActivity : Activity() {
                 ProxyHttpServer.setPort(this, port)
                 dialog.dismiss()
                 if (checkPermission(REQUEST_CODE_HTTP_SERVER)) {
-                    startHttpServerWithNotificationPermission()
+                    startServiceWithNotificationPermission(Intent(this, ProxyHttpService::class.java))
                 }
             }
         }
         dialog.show()
     }
 
-    private fun startHttpServerWithNotificationPermission() {
+    private fun startServiceWithNotificationPermission(intent: Intent) {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
+            pendingServiceIntent = intent
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_CODE_NOTIFICATION)
         } else {
-            startHttpServer()
+            startServiceInternal(intent)
         }
     }
 
-    private fun startHttpServer() {
+    private fun startServiceInternal(intent: Intent) {
         try {
-            val intent = Intent(this, ProxyHttpService::class.java)
             if (Build.VERSION.SDK_INT >= 26) {
                 startForegroundService(intent)
             } else {
@@ -283,10 +302,13 @@ class DemoActivity : Activity() {
             }
             // onCreate 是异步的，稍等再刷新按钮状态
             binding.buttonHttpToggle.postDelayed({ updateHttpStatus() }, 500)
+            binding.buttonPushToggle.postDelayed({ updatePushStatus() }, 500)
         } catch (tr: Throwable) {
             binding.text3.text = Log.getStackTraceString(tr)
         }
     }
+
+    private fun startHttpServer() = startServiceInternal(Intent(this, ProxyHttpService::class.java))
 
     private fun updateHttpStatus() {
         val running = ProxyHttpService.running
@@ -303,6 +325,150 @@ class DemoActivity : Activity() {
                 "当前端口: $port（点「启动 HTTP 服务」可修改）\n" +
                 "启动后同一 WiFi 访问 http://<手机IP>:$port，或 USB 连接后执行:\n" +
                 "adb reverse tcp:$port tcp:$port"
+        }
+    }
+
+    // ---- 服务端推送（ntfy）：手机长轮询订阅自建 ntfy 服务器，NAS 上 curl 即可发通知 ----
+
+    private fun togglePush() {
+        if (NtfyPushService.running) {
+            stopService(Intent(this, NtfyPushService::class.java))
+            // onDestroy 是异步的，稍等再刷新按钮状态
+            binding.buttonPushToggle.postDelayed({ updatePushStatus() }, 300)
+            return
+        }
+        if (!PushConfig.isConfigured(this)) {
+            binding.text3.text = "请先填写推送设置（服务器 / topic）"
+            showPushConfigDialog()
+            return
+        }
+        startServiceWithNotificationPermission(Intent(this, NtfyPushService::class.java))
+    }
+
+    /** 推送设置弹窗：服务器地址 / topic / token（token 可选但强烈建议）。 */
+    private fun showPushConfigDialog() {
+        val density = resources.displayMetrics.density
+        val pad = (16 * density).toInt()
+        fun editText(initial: String, hint: String, inputType: Int) = EditText(this).apply {
+            setText(initial)
+            this.hint = hint
+            this.inputType = inputType
+            setPadding(pad, pad, pad, pad)
+        }
+        val etServer = editText(
+            PushConfig.getServer(this),
+            "https://push.你的域名（ntfy 服务器地址）",
+            InputType.TYPE_TEXT_VARIATION_URI
+        )
+        val etTopic = editText(
+            PushConfig.getTopic(this),
+            "shellbox_随机topic（相当于密码）",
+            InputType.TYPE_CLASS_TEXT
+        )
+        val etToken = editText(
+            PushConfig.getToken(this),
+            "tk_xxx（访问令牌，可选但强烈建议）",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        )
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(etServer)
+            addView(etTopic)
+            addView(etToken)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("推送设置（ntfy）")
+            .setMessage("NAS 上发推送：\ncurl -d \"消息\" <服务器>/<topic>")
+            .setView(container)
+            .setPositiveButton("保存", null) // 点击行为在 setOnShowListener 里接管，便于校验失败时不关闭
+            .setNegativeButton("取消", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val newServer = etServer.text.toString().trim()
+                val newTopic = etTopic.text.toString().trim()
+                val newToken = etToken.text.toString().trim()
+                if (newServer.isBlank() || newTopic.isBlank()) {
+                    binding.text3.text = "服务器和 topic 不能为空"
+                    return@setOnClickListener
+                }
+                val changed = newServer != PushConfig.getServer(this) || newTopic != PushConfig.getTopic(this)
+                PushConfig.setServer(this, newServer)
+                PushConfig.setTopic(this, newTopic)
+                PushConfig.setToken(this, newToken)
+                if (changed) PushConfig.clearLastId(this) // 换 topic 后丢弃旧 id，避免把旧消息 id 传给新 topic
+                dialog.dismiss()
+                updatePushStatus()
+                // 服务正在运行时改配置：重启生效（订阅循环持有旧的 server/topic）
+                if (NtfyPushService.running) {
+                    stopService(Intent(this, NtfyPushService::class.java))
+                    binding.buttonPushToggle.postDelayed({
+                        startServiceWithNotificationPermission(Intent(this, NtfyPushService::class.java))
+                    }, 400)
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    /** 测试推送：手机直接发布一条消息到 topic，走完整链路（发布→服务器→订阅循环→通知）。 */
+    private fun testPush() {
+        if (!PushConfig.isConfigured(this)) {
+            binding.text3.text = "请先配置推送（服务器 / topic）"
+            showPushConfigDialog()
+            return
+        }
+        if (!NtfyPushService.running) {
+            binding.text3.text = "请先启动推送服务，再发送测试推送"
+            return
+        }
+        binding.textPushStatus.text = "正在发送测试推送…"
+        Thread {
+            try {
+                NtfyClient.publish(
+                    PushConfig.getServer(this),
+                    PushConfig.getTopic(this),
+                    PushConfig.getToken(this),
+                    "ShellBox 测试推送",
+                    "如果你看到这条通知，推送链路已打通 🎉",
+                    4
+                )
+                binding.root.post {
+                    binding.textPushStatus.text = "测试推送已发出，通知应 1-2 秒内弹出（重要通道，横幅+声音）"
+                }
+            } catch (tr: Throwable) {
+                tr.printStackTrace()
+                binding.root.post {
+                    binding.textPushStatus.text = "测试推送发送失败"
+                    binding.text3.text = "测试推送失败: ${tr.message}"
+                }
+            }
+        }.start()
+    }
+
+    private fun updatePushStatus() {
+        val running = NtfyPushService.running
+        binding.buttonPushToggle.text = if (running) "停止推送服务" else "启动推送服务"
+        val configured = PushConfig.isConfigured(this)
+        val server = PushConfig.getServer(this)
+        val topic = PushConfig.getTopic(this)
+        val err = NtfyPushService.lastError
+        binding.textPushStatus.text = if (!configured) {
+            "推送服务未配置\n点「推送设置」填写 ntfy 服务器 / topic / token"
+        } else {
+            buildString {
+                append(if (running) "推送服务运行中" else "推送服务未运行").append('\n')
+                append("服务器: ").append(server).append('\n')
+                append("topic: ").append(topic).append('\n')
+                if (PushConfig.getToken(this@DemoActivity).isNotBlank()) {
+                    append("token: ").append(PushConfig.getToken(this@DemoActivity)).append('\n')
+                }
+                append("NAS 用法: curl -d \"消息\" ").append(server).append('/').append(topic).append('\n')
+                append("已收到通知: ").append(NtfyPushService.receivedCount).append(" 条").append('\n')
+                NtfyPushService.lastMessagePreview?.let { append("最后一条: ").append(it).append('\n') }
+                err?.let { append("最近错误: ").append(it) }
+            }.trimEnd()
         }
     }
 }
