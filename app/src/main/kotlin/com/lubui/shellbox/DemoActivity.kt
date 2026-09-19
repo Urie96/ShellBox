@@ -67,6 +67,15 @@ class DemoActivity : Activity() {
         binding.checkAutoStart.isChecked = ProxyHttpServer.isAutoStartEnabled(this)
         binding.checkAutoStart.setOnCheckedChangeListener { _, checked ->
             ProxyHttpServer.setAutoStartEnabled(this, checked)
+            if (checked) {
+                // 勾选即生效：立刻启动一次（应用可见时启动前台服务必定被允许），并排上保活闹钟
+                if (!ProxyHttpService.running) startServiceInternal(Intent(this, ProxyHttpService::class.java))
+                ServiceWatchdog.schedule(this)
+                binding.text3.text = keepAliveHint()
+            } else {
+                ServiceWatchdog.schedule(this) // 另一个开关可能还开着；都关了 schedule 内部会取消
+            }
+            updateWatchdogStatus()
         }
         binding.buttonOverlayPermission.setOnClickListener { requestOverlayPermission() }
         updateOverlayStatus()
@@ -77,6 +86,22 @@ class DemoActivity : Activity() {
         binding.checkPushAutoStart.isChecked = PushConfig.isAutoStartEnabled(this)
         binding.checkPushAutoStart.setOnCheckedChangeListener { _, checked ->
             PushConfig.setAutoStartEnabled(this, checked)
+            if (checked) {
+                // 勾选即生效：立刻启动一次（没配置则引导去配置）
+                if (!PushConfig.isConfigured(this)) {
+                    binding.text3.text = "请先填写推送设置（服务器 / topic），填完自动保活才会生效"
+                    showPushConfigDialog()
+                } else {
+                    if (!NtfyPushService.running) {
+                        startServiceWithNotificationPermission(Intent(this, NtfyPushService::class.java))
+                    }
+                    binding.text3.text = keepAliveHint()
+                }
+                ServiceWatchdog.schedule(this)
+            } else {
+                ServiceWatchdog.schedule(this)
+            }
+            updateWatchdogStatus()
         }
         updatePushStatus()
 
@@ -87,9 +112,22 @@ class DemoActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // 打开应用时兜底：自动保活开关为开但服务没在跑（例如被厂商省电策略杀掉进程）就重新拉起；
+        // 同时补排保活闹钟（闹钟可能被厂商省电策略清掉）。应用可见时启动前台服务必定被允许。
+        val acted = ServiceWatchdog.checkAndRestart(this)
+        ServiceWatchdog.schedule(this)
         updateHttpStatus()
         updatePushStatus() // 从设置页/系统设置返回后刷新
         updateOverlayStatus() // 从系统悬浮窗设置页返回后刷新
+        updateWatchdogStatus()
+        if (acted) {
+            // service onCreate 是异步的，稍等再刷新一遍
+            binding.root.postDelayed({
+                updateHttpStatus()
+                updatePushStatus()
+                updateWatchdogStatus()
+            }, 600)
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -241,6 +279,12 @@ class DemoActivity : Activity() {
     private fun toggleHttpServer() {
         if (ProxyHttpService.running) {
             stopService(Intent(this, ProxyHttpService::class.java))
+            // 手动停服务 = 明确表达「现在不要它跑」：同时关掉自动保活，
+            // 否则 15 分钟后看门狗（或下次打开应用）会把它拉回来
+            if (ProxyHttpServer.isAutoStartEnabled(this)) {
+                binding.checkAutoStart.isChecked = false // 触发 listener：写 prefs + 重排/取消闹钟
+                binding.text3.text = "已停止 HTTP 服务，并关闭「自动保活」（否则会被自动重启）"
+            }
             // onDestroy 是异步的，稍等再刷新按钮状态
             binding.buttonHttpToggle.postDelayed({ updateHttpStatus() }, 300)
             return
@@ -333,6 +377,11 @@ class DemoActivity : Activity() {
     private fun togglePush() {
         if (NtfyPushService.running) {
             stopService(Intent(this, NtfyPushService::class.java))
+            // 同上：手动停服务同时关掉自动保活，避免被看门狗拉回来
+            if (PushConfig.isAutoStartEnabled(this)) {
+                binding.checkPushAutoStart.isChecked = false
+                binding.text3.text = "已停止推送服务，并关闭「自动保活」（否则会被自动重启）"
+            }
             // onDestroy 是异步的，稍等再刷新按钮状态
             binding.buttonPushToggle.postDelayed({ updatePushStatus() }, 300)
             return
@@ -445,6 +494,22 @@ class DemoActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    /** 勾选「自动保活」时的提示文案。 */
+    private fun keepAliveHint(): String =
+        "已开启自动保活：开机自启 + 被杀后自动重启（每 ${ServiceWatchdog.INTERVAL_MS / 60000} 分钟检查一次）"
+
+    /** 保活看门狗状态：开关是否启用 + 上次检查时间和结果（诊断「为什么服务又没了」）。 */
+    private fun updateWatchdogStatus() {
+        binding.textWatchdogStatus.text = if (!ServiceWatchdog.isEnabled(this)) {
+            "保活看门狗：未启用（两个自动保活开关都未勾选）"
+        } else {
+            val last = ServiceWatchdog.formatTime(ServiceWatchdog.lastCheckTime(this))
+            val result = ServiceWatchdog.lastResult(this) ?: "-"
+            "保活看门狗：每 ${ServiceWatchdog.INTERVAL_MS / 60000} 分钟检查一次\n" +
+                "上次检查: $last · $result"
+        }
     }
 
     private fun updatePushStatus() {

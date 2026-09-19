@@ -71,14 +71,24 @@
                 android:value="ntfy push notification subscriber (long-poll to self-hosted ntfy server)" />
         </service>
 
-        <!-- 开机自动启动 HTTP 服务（是否自启由应用内开关决定，见 DemoActivity 的「开机自启」） -->
+        <!-- 开机自动启动服务 + 重排保活闹钟（是否自启由应用内「自动保活」开关决定，见 DemoActivity） -->
         <receiver android:name=".BootReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <!-- 系统时间/时区/语言变化也是 Android 12+ 允许后台启动前台服务的豁免场景，
+                     当成额外的「检查一次」时机（比如自动对时后） -->
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.LOCALE_CHANGED" />
             </intent-filter>
         </receiver>
+
+        <!-- 保活看门狗闹钟接收器：每 15 分钟检查「自动保活开关为开但服务没跑」并拉起服务。
+             用显式 Intent 的 PendingIntent 触发，不需要 intent-filter，也不用 exported -->
+        <receiver android:name=".WatchdogReceiver"
+            android:exported="false" />
 
         <!-- This provider is required by Shizuku, remove this if your app only supports Sui -->
         <provider

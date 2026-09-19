@@ -21,7 +21,8 @@ import com.lubui.shellbox.util.PushConfig
 /**
  * 承载 ntfy 订阅循环的前台服务（服务端推送）。
  *
- * 与 [ProxyHttpService] 同样的常驻策略：specialUse 前台服务 + START_STICKY。
+ * 与 [ProxyHttpService] 同样的常驻策略：specialUse 前台服务 + START_STICKY + 保活看门狗
+ * （[ServiceWatchdog]：厂商省电策略会把整个进程 o-kill 掉，START_STICKY 只是尽力而为）。
  * 手机**主动向外**长轮询连接 ntfy 服务器，所以手机在任何网络（家里 WiFi/流量/在外面）都能收到推送；
  * NAS 侧只需 `curl -d "消息" https://你的ntfy服务器/topic`，不需要知道手机在哪。
  *
@@ -75,13 +76,21 @@ class NtfyPushService : Service() {
             server.ifBlank { "<未配置>" },
             topic.ifBlank { "<未配置>" }
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // Android 14+：specialUse 类型，避免 Android 15+ 对 dataSync 的 6 小时时限杀掉常驻服务
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            // API 29-33 用两参版本；API 28- 无类型概念
-            @Suppress("DEPRECATION")
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Android 14+：specialUse 类型，避免 Android 15+ 对 dataSync 的 6 小时时限杀掉常驻服务
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                // API 29-33 用两参版本；API 28- 无类型概念
+                @Suppress("DEPRECATION")
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (tr: Throwable) {
+            // 由保活看门狗在后台拉起时，若本应用没被电池优化豁免，Android 12+ 会拒绝前台服务：
+            // 不能让异常把进程崩掉，直接收工，等下次检查（或用户打开应用）再试。见 ServiceWatchdog。
+            Log.e(TAG, "startForeground failed, stopping service", tr)
+            stopSelf()
+            return
         }
 
         if (server.isBlank() || topic.isBlank()) {

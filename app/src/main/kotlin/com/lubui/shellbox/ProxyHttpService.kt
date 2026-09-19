@@ -21,7 +21,8 @@ import com.lubui.shellbox.util.ProxyHttpServer
  * Android 14（targetSdk 36）还要求声明 foregroundServiceType=dataSync
  * （manifest 中已声明，见 AndroidManifest.xml）。
  *
- * START_STICKY：进程被系统杀死后会自动重建并重新监听。
+ * START_STICKY：进程被系统杀死后会自动重建并重新监听（尽力而为；厂商 ROM 会连前台服务
+ * 一起 o-kill，真正兜底的是 [ServiceWatchdog]）。
  */
 class ProxyHttpService : Service() {
 
@@ -47,12 +48,20 @@ class ProxyHttpService : Service() {
         val ip = ProxyHttpServer.getLocalIpAddress() ?: "<获取IP失败>"
 
         val notification = buildNotification(ip, token, port)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // Android 14+：specialUse 类型，避免 Android 15+ 对 dataSync 的 6 小时时限杀掉常驻服务
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            // API 29-33 用两参版本（类型取 manifest 声明）；API 28- 无类型概念
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Android 14+：specialUse 类型，避免 Android 15+ 对 dataSync 的 6 小时时限杀掉常驻服务
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                // API 29-33 用两参版本（类型取 manifest 声明）；API 28- 无类型概念
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (tr: Throwable) {
+            // 由保活看门狗在后台拉起时，若本应用没被电池优化豁免，Android 12+ 会拒绝前台服务：
+            // 不能让异常把进程崩掉，直接收工，等下次检查（或用户打开应用）再试。见 ServiceWatchdog。
+            Log.e(TAG, "startForeground failed, stopping service", tr)
+            stopSelf()
+            return
         }
 
         server = ProxyHttpServer.create(this).also { it.start() }

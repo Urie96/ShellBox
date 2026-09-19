@@ -19,6 +19,8 @@ https://github.com/RikkaApps/Sui（子模块式结构，含 Shizuku-API）。
 - **服务端推送**（前台服务，`NtfyPushService`）：手机长轮询订阅自建 ntfy 服务器，
   NAS/任意设备 `curl -d "消息" https://<ntfy服务器>/<topic>` 即可弹系统通知（Bark 替代），
   见下方「服务端推送」章节
+- **自动保活看门狗**（`ServiceWatchdog` / `WatchdogReceiver`）：两个服务都有「自动保活」
+  开关（开机自启 + 被杀后自动重启，每 15 分钟检查一次），见下方「自动保活看门狗」章节
 
 ## 技术栈与版本
 
@@ -64,13 +66,15 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 app/src/main/
 ├── kotlin/com/lubui/shellbox/
-│   ├── DemoActivity.kt            # 主界面（viewBinding: MainActivityBinding），代理开关 + HTTP 服务开关 + 开机自启
+│   ├── DemoActivity.kt            # 主界面（viewBinding: MainActivityBinding），代理开关 + 服务开关 + 自动保活开关
 │   ├── DemoApplication.kt         # Sui.init + HiddenApiBypass 全局豁免
 │   ├── ProxyShortcutActivity.kt   # 长按快捷方式入口（Theme.NoDisplay，无界面）
 │   ├── ClipboardGhostActivity.kt  # 剪贴板读取用透明幽灵 Activity（抢焦点读后立即关闭）
 │   ├── ProxyHttpService.kt        # HTTP 服务前台服务（foregroundServiceType=specialUse）
 │   ├── NtfyPushService.kt         # 推送服务前台服务（ntfy 订阅，同样 specialUse）
-│   ├── BootReceiver.kt            # 开机/应用更新后自动启动 HTTP 服务与推送服务（受各自开关控制）
+│   ├── ServiceWatchdog.kt         # ★ 保活看门狗：检查「开关为开但服务没跑」并拉起服务 + 排闹钟
+│   ├── WatchdogReceiver.kt        # 看门狗闹钟接收器（检查一次 + 自续期）
+│   ├── BootReceiver.kt            # 开机/应用更新/系统时间时区语言变化 → 启动服务 + 重排闹钟
 │   └── util/
 │       ├── SettingsGlobalUtils.kt # ★ 核心：以 shell/root 读写 Settings.Global
 │       ├── ProxyHistory.kt        # 最近使用的代理地址历史（SharedPreferences，最多 10 条）
@@ -81,7 +85,7 @@ app/src/main/
 │       └── ClipboardApi.kt        # 剪贴板读写：写入直接写；读取 Android 10+ 走 ghost activity
 └── res/
     ├── xml/shortcuts.xml          # 静态快捷方式（长按菜单：开启/关闭代理）
-    ├── layout/main_activity.xml   # 主界面：开启/关闭代理 + HTTP 服务开关 + 状态文本
+    ├── layout/main_activity.xml   # 主界面：代理开关 + 服务开关 + 状态文本 + 保活看门狗状态
     ├── layout/dialog_proxy.xml    # 开启代理对话框：历史地址列表 + 手动输入框
     └── drawable/ic_proxy_on|off.xml
 ```
@@ -115,9 +119,11 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
 - **端口可配置**：点「启动 HTTP 服务」会先弹输入框（预填当前值），校验 1-65535 后存入
   SharedPreferences（`http_server` 的 `port` key，默认 `DEFAULT_PORT=16888`）；
   服务启动时用 `ProxyHttpServer.getPort()` 读取。改 `DEFAULT_PORT` 常量即可换默认值。
-- **开机自启**：`BootReceiver` 监听 BOOT_COMPLETED / MY_PACKAGE_REPLACED，受应用内
-  「开机自动启动 HTTP 服务」勾选框控制（`http_server` 的 `auto_start` key，默认关）。
-  Android 12+ 从 BOOT_COMPLETED 启动前台服务是豁免场景；重启后 Sui 授权持久可用，
+- **自动保活**：受应用内「自动保活 HTTP 服务」勾选框控制（`http_server` 的 `auto_start`
+  key，默认关）。开关为开时：开机（BOOT_COMPLETED）、覆盖安装（MY_PACKAGE_REPLACED）、
+  系统时间/时区/语言变化、每 15 分钟一次的看门狗闹钟、每次打开应用（onResume）都会
+  检查「服务没跑就拉起」；详见下方「自动保活看门狗」章节。
+  Android 12+ 从这些时机启动前台服务属于豁免场景；重启后 Sui 授权持久可用，
   Shizuku 需重新走 adb 启动，未授权时 /proxy 返回 403。
 - **前台服务类型用 specialUse 而非 dataSync**：Android 15+ 对 dataSync 有 6 小时/24 小时
   时限，会杀掉常驻服务；specialUse 无时限，但 manifest 需声明
@@ -182,8 +188,39 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
   前缀到标题；`click` 字段仅放行 http/https 跳浏览器，否则打开应用；每次推送都是新通知（ID 递增）。
 - **配置**：应用内「推送设置」填服务器/topic/token（`push` prefs）；「发送测试推送」走完整链路
   （发布→服务器→订阅循环→通知）；改 server/topic 会 `clearLastId` 并重启服务生效。
-- **开机自启**：BootReceiver 按 `push/auto_start` 开关（默认关）启动，与 HTTP 服务独立。
+- **自动保活**：按 `push/auto_start` 开关（默认关）拉服务，与 HTTP 服务独立；
+  触发时机与 HTTP 服务完全相同（见下方「自动保活看门狗」章节）。
+  未配置 server/topic 时看门狗会跳过（不启动服务），只记一句「推送未配置，跳过」。
 - 认证/权限：不需要 Shizuku；POST_NOTIFICATIONS 走同一套请求流程（拒绝不影响服务本身）。
+
+## 自动保活看门狗：ServiceWatchdog / WatchdogReceiver
+
+两个服务（HTTP / 推送）各有一个「自动保活」勾选框（`http_server` / `push` 的 `auto_start`
+key，默认关），语义是**「它应该在跑」**，而不是「只在开机动一下」。开关为开时：
+
+1. **开机 / 覆盖安装 / 系统时间·时区·语言变化**：`BootReceiver` 触发一次检查并重排闹钟
+   （这些 action 都是 Android 12+ 允许后台启动前台服务的豁免场景）；
+2. **每 15 分钟**：`WatchdogReceiver` 收到 `AlarmManager.setAndAllowWhileIdle` 单次闹钟
+   （**非精确**、不需 `SCHEDULE_EXACT_ALARM`、可穿透 Doze；每次检查完自己排下一次，
+  同一 PendingIntent → 不会堆积）；
+3. **每次打开应用**：`DemoActivity.onResume` 检查一次并补排闹钟（闹钟可能被厂商省电策略清掉）。
+
+检查逻辑统一在 `ServiceWatchdog.checkAndRestart()`：开关为开且 `Service.running == false`
+→ `startForegroundService()`；结果（「已启动 X」/「X 被系统拒绝」/「服务都在运行」）写入
+`watchdog` prefs，UI 底部「保活看门狗」状态区展示上次检查时间 + 结果。
+
+配套语义（必须保持一致，否则用户会被“复活”搞糊涂）：
+
+- **勾选开关 = 立即生效**：写 prefs 后当场启动一次服务，并排上看门狗闹钟（推送未配置时
+  只弹配置对话框，不启动）；
+- **手动「停止服务」会顺手取消勾选**（并提示原因）——否则 15 分钟后看门狗会把它拉回来；
+- **取消勾选不会停服务**（只表示「以后不管了」）；两个开关都关时闹钟被取消。
+
+为什么需要 _自己_ 做这件事：`START_STICKY` 只是「系统尽力重建」，而厂商 ROM 会把整个进程
+o-kill（实测 ColorOS `o-kill(37)`，前台服务也一起死）。实测：09-19 覆盖安装后 `MY_PACKAGE_REPLACED`
+触发，两个服务被后台拉起，logcat 显示
+`Background started FGS: Allowed ... code:SYSTEM_ALERT_WINDOW_PERMISSION; tempAllowListReason:<,reasonCode:SYSTEM_ALLOW_LISTED,...>`，
+`dumpsys alarm` 能看到 `action com.lubui.shellbox.action.WATCHDOG_CHECK` 的 RTC_WAKEUP 闹钟。
 
 ## 权限/交互流程
 
@@ -244,7 +281,8 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
     manifest 里 taskAffinity="" + noHistory + excludeFromRecents；
     **后台场景必须「显示在其他应用上层」权限**（BAL 豁免），否则系统静默拦截 ghost 启动
     （logcat 搜 "Background activity launch blocked"）；Android 12+ 读剪贴板必弹系统 toast，属平台行为。
-12. **开机自启**：`BootReceiver` 不要直接硬启动——先查 `isAutoStartEnabled()`；
+12. **开机自启 / 自动保活**：`BootReceiver` 不要直接硬启动——真正逻辑在
+    `ServiceWatchdog.checkAndRestart()`（先查 `isAutoStartEnabled()`）；
     BOOT_COMPLETED 豁免仅适用于系统正常开机广播，厂商 ROM 可能有「自启动管理」白名单，
     被禁时收不到广播（MIUI/HyperOS 需在设置里允许后台自启）。
 13. **ntfy 订阅参数**：`since` 合法值是 duration / unix 时间戳 / 消息 id / `all`，**没有 `since=none`**；
@@ -269,6 +307,14 @@ SecurityException。该工具类让调用以 shell/root 身份执行：
     （`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）时严禁卸载重装——那会清掉设备上应用的全部数据
     （代理历史、HTTP token、推送配置等），且可能根本没被授权。停下来问用户，通常用 release
     签名覆盖安装即可，见「构建与部署」。
+19. **保活看门狗（ServiceWatchdog）不要改成“后台无条件硬启动”**：Android 12+ 从后台启动
+    前台服务受限，只有少数豁免场景允许——本项目实际吃到的是「用户关掉了应用电池优化」
+    （`dumpsys deviceidle whitelist` 里有包名；logcat 里是 `tempAllowListReason:SYSTEM_ALLOW_LISTED`）
+    和「系统广播」；`SYSTEM_ALERT_WINDOW` 在 targetSdk 35+ 还要求**当前有可见悬浮窗**，不能依赖。
+    因此：`ServiceWatchdog.restart()` 必须 try/catch（失败只记状态，否则闹钟广播里抛异常 = 崩进程），
+    两个服务的 `startForeground()` 也包了 try/catch + `stopSelf()`（被拒时不能崩进程）；
+    不要用 `setExactAndAllowWhileIdle`（要 `SCHEDULE_EXACT_ALARM` 权限，Android 14+ 默认拒绝），
+    用 `setAndAllowWhileIdle` + 每次自续期。
 
 ## 相关资源
 

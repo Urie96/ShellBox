@@ -54,7 +54,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="开机自动启动 HTTP 服务" />
+            android:text="自动保活 HTTP 服务（开机自启 + 被杀后自动重启）" />
 
         <Button
             android:id="@+id/button_overlay_permission"
@@ -114,10 +114,18 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="开机自动启动推送服务" />
+            android:text="自动保活推送服务（开机自启 + 被杀后自动重启）" />
 
         <TextView
             android:id="@+id/text_push_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:fontFamily="monospace"
+            android:textIsSelectable="true" />
+
+        <TextView
+            android:id="@+id/text_watchdog_status"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
